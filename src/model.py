@@ -4,7 +4,6 @@ from langchain.chat_models import init_chat_model
 
 logger = logging.getLogger(__name__)
 
-
 def get_model():
     """Initialize and return the configured language model"""
     model_name = os.getenv("LLM_MODEL", "claude-3-5-sonnet-20241022")
@@ -17,6 +16,7 @@ def get_model():
     if os.getenv("OPENAI_API_BASE"):
         return init_chat_model(
             model_name,
+            model_provider="openai",
             base_url=os.getenv("OPENAI_API_BASE"),
             api_key=os.getenv("OPENAI_API_KEY", "not-needed"),
             max_tokens=int(os.getenv("MAX_TOKENS", "8192")),

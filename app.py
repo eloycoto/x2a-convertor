@@ -8,9 +8,8 @@ from dotenv import load_dotenv
 
 from langchain.globals import set_debug
 from src.init import init_project
-from src.migrate import migrate_component
 from src.validate import validate_component
-from src.inputs.analyze import analyze_project
+from src.inputs.analyze import  analyze_migration_request
 
 
 def setup_logging():
@@ -37,17 +36,15 @@ def init(user_requirements, source_dir):
 
 
 @cli.command()
-def analyze():
-    """Perform detailed analysis and create component migration plans"""
-    analyze_project()
+@click.argument("message")
+@click.option("--dir", default=".", help="Target repository directory")
+def analyze(message, dir):
+    analyze_migration_request(message, dir)
 
 
 @cli.command()
-@click.argument("component_name")
-def migrate(component_name):
-    """Migrate specific component to Ansible (e.g., 'postgres', 'nginx')"""
-    migrate_component(component_name)
-
+def migrate(component_name, dir):
+    pass
 
 @cli.command()
 @click.argument("component_name")

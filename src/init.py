@@ -12,7 +12,7 @@ from prompts.get_prompt import get_prompt
 from src.model import get_model
 
 logger = logging.getLogger(__name__)
-migration_plan_file = "migration-plan-generated.md"
+migration_plan_file = "migration-plan.md"
 
 
 def create_migration_agent():
@@ -48,8 +48,7 @@ def init_project(user_requirements, source_dir="."):
     """Initialize project with migration planning"""
     logger.info("Analyzing repository for migration planning...")
     logger.debug(f"User requirements: {user_requirements}")
-
-    # Change to source directory if specified
+    # Change to target repository directory if specified
     os.chdir(source_dir)
 
     try:
@@ -71,6 +70,7 @@ def init_project(user_requirements, source_dir="."):
             },
         )
 
+        # Debug: Print result structure and last AI message
         logger.debug("Migration agent result:")
         logger.debug(f"Result type: {type(result)}")
         logger.debug(
@@ -78,19 +78,16 @@ def init_project(user_requirements, source_dir="."):
         )
 
         # Print last AI message and ALL tool calls made during conversation
-        for user_requirements in result["messages"]:
-            user_requirements.pretty_print()
-
+        for message in result["messages"]:
+            message.pretty_print()
         # Check if the migration plan was actually created
         if os.path.exists(migration_plan_file):
-            click.echo("✅ Migration plan generated successfully!")
+            click.echo("Migration plan generated successfully!")
             click.echo(
-                f"📄 Check '{migration_plan_file}' for the detailed migration analysis."
+                f"Check '{migration_plan_file}' for the detailed migration analysis."
             )
         else:
-            click.echo(
-                f"⚠️  Agent completed but '{migration_plan_file}' was not created."
-            )
+            click.echo(f"Agent completed but {migration_plan_file} was not created.")
         return result
 
     except Exception as e:
