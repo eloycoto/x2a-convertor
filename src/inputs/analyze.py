@@ -51,18 +51,7 @@ def analyze_migration_request(user_request: str, target_dir: str = "."):
         supervisor = create_migration_supervisor().compile()
         
         # Prepare the analysis message
-        analysis_message = f"""
-        The user wants to: {user_request}
-        
-        Your task is to:
-        1. Read the migration-plan.md file to understand what modules are available
-        2. Identify which module the user is referring to
-        3. Determine what technology that module uses (Chef, Puppet, Salt, etc.)
-        4. If it's a Chef cookbook, delegate to the chef_agent
-        5. For other technologies, create a basic migration plan yourself
-        
-        Start by reading migration-plan.md and identifying the relevant module.
-        """
+        analysis_message = f"The user wants to: {user_request}"
         
         # Execute the supervisor
         result = supervisor.invoke(
