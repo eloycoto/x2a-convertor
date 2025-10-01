@@ -13,17 +13,19 @@ from src.inputs.chef import create_chef_detailed_agent
 
 def create_migration_supervisor():
     """Create migration supervisor with Chef agent"""
-    
+
     # Create the chef agent with a name
-    chef_agent = create_chef_detailed_agent()
-    
+    chef_agent, chef_tool = create_chef_detailed_agent()
+
     # Use the existing analyzer prompt
-    supervisor_prompt = get_prompt("analyzer") 
+    supervisor_prompt = get_prompt("analyzer")
+
     tools = [
         FileSearchTool(),
         ListDirectoryTool(),
         ReadFileTool(),
         WriteFileTool(),
+        chef_tool,
     ]
 
     # Create supervisor with chef agent
@@ -32,10 +34,10 @@ def create_migration_supervisor():
         agents=[chef_agent],
         tools=tools,
         prompt=supervisor_prompt,
-        add_handoff_back_messages=True,
+        # add_handoff_back_messages=True,
         output_mode="full_history",
     )
-    
+
     return supervisor
 
 

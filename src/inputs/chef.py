@@ -5,6 +5,7 @@ from langchain_community.tools.file_management.file_search import FileSearchTool
 from langchain_community.tools.file_management.list_dir import ListDirectoryTool
 from langchain_community.tools.file_management.read import ReadFileTool
 from langchain_community.tools.file_management.write import WriteFileTool
+from langgraph_supervisor.handoff import create_handoff_tool
 from langgraph.prebuilt import create_react_agent
 from prompts.get_prompt import get_prompt
 from src.model import get_model
@@ -18,7 +19,7 @@ def create_chef_detailed_agent():
     - Read and analyze recipes, templates, and attributes
     - Generate step-by-step migration instructions with validation commands
     """
-
+    name = "chef_cookbook_migration_specialist"
     model = get_model()
 
     # Set up file management tools
@@ -36,6 +37,12 @@ def create_chef_detailed_agent():
         model=model,
         tools=tools,
         prompt=system_prompt,
-        name="chef_cookbook_migration_specialist"
+        name=name,
     )
-    return agent
+
+    chef_handoff_tool = create_handoff_tool(
+        agent_name=name,
+        description="Analyzes Chef cookbooks and creates detailed specifications on what the cookbook does"
+    )
+    
+    return agent, chef_handoff_tool
