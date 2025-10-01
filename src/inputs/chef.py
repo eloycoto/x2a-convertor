@@ -17,7 +17,6 @@ def create_chef_detailed_agent():
     - Explore cookbook directory structure using file tools
     - Read and analyze recipes, templates, and attributes
     - Generate step-by-step migration instructions with validation commands
-    - Write comprehensive migration-plan-[module].md files
     """
 
     model = get_model()
@@ -27,7 +26,6 @@ def create_chef_detailed_agent():
         FileSearchTool(),
         ListDirectoryTool(),
         ReadFileTool(),
-        WriteFileTool(),
     ]
 
     # Get the Chef detailed migration prompt
