@@ -1,14 +1,17 @@
 import os
 import logging
 import re
-from pathlib import Path
-from typing import Dict, List, Any, Optional
-from abc import ABC, abstractmethod
-from tree_sitter import Language, Parser, Node
-import tree_sitter_ruby as tsruby
 import tree_sitter_json as tsjson
+import tree_sitter_ruby as tsruby
 
-FOLDER = "/home/eloy/dev/upstream/x2ansible/chef-example/cookbooks/nginx-multisite/"
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from pathlib import Path
+from tree_sitter import Language, Parser, Node
+from typing import Dict, List, Any, Optional
+
+#FOLDER = "/home/eloy/dev/upstream/x2ansible/chef-example/cookbooks/cache/"
+#FOLDER = "/home/eloy/dev/upstream/x2ansible/chef-example/cookbooks/nginx-multisite/"
 
 # Chef-specific constants
 CHEF_RESOURCES = [
@@ -55,7 +58,160 @@ CHEF_ATTRIBUTES = [
     "supports",
 ]
 
+# Lookup tables for better maintainability
+RESOURCE_CATEGORY_MAP = {
+    # Package management
+    "package": "package_management",
+    "apt_package": "package_management", 
+    "yum_package": "package_management",
+    "gem_package": "package_management",
+
+    # File management
+    "file": "file_management",
+    "template": "file_management",
+    "cookbook_file": "file_management",
+    "remote_file": "file_management",
+    "directory": "file_management",
+    
+    # Service management
+    "service": "service_management",
+    
+    # Execution
+    "execute": "execution",
+    "script": "execution", 
+    "bash": "execution",
+    "ruby_block": "execution",
+    
+    # System configuration
+    "user": "system_configuration",
+    "group": "system_configuration",
+    "cron": "system_configuration",
+    "mount": "system_configuration",
+    "route": "system_configuration",
+    "link": "system_configuration",
+}
+
+TEMPLATE_PURPOSE_MAP = {
+    "config": "configuration file",
+    "service": "service definition", 
+    "init": "initialization script",
+    "nginx": "nginx configuration",
+    "site": "site configuration",
+}
+
+FILE_EXTENSION_PARSER_MAP = {
+    ".rb": "ruby",
+    ".json": "json",
+}
+
+FILE_CATEGORY_MAP = {
+    "attributes/": "attributes",
+    "recipes/": "recipes", 
+    "resources/": "resources",
+    "metadata.rb": "metadata",
+}
+
+IMPORTANT_ATTRIBUTES = {
+    "action", "source", "mode", "variables", 
+    "command", "content", "path"
+}
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ChefResource:
+    """Represents a Chef resource with its properties."""
+    type: str
+    name: Optional[str]
+    line: int
+    attributes: Dict[str, Any]
+    block_content: Optional[str] = None
+    category: str = "other"
+    has_dynamic_name: bool = False
+    important_attributes: Dict[str, Any] = None
+
+    def __post_init__(self):
+        if self.important_attributes is None:
+            self.important_attributes = {}
+
+
+@dataclass
+class ChefAttribute:
+    """Represents a Chef attribute assignment."""
+    name: str
+    value: str
+    line: int
+    display_value: str = ""
+
+    def __post_init__(self):
+        if not self.display_value:
+            self.display_value = self.value[:77] + "..." if len(self.value) > 80 else self.value
+
+
+@dataclass
+class LoopInfo:
+    """Represents a detected loop in Chef code."""
+    type: str
+    variable: str
+    iterator_vars: str
+    full_expression: str
+
+
+@dataclass
+class TemplateFile:
+    """Represents a Chef template file."""
+    path: str
+    name: str
+    purpose: str
+
+
+@dataclass
+class FileSummary:
+    """Summary statistics for a single file."""
+    total_classes: int = 0
+    total_methods: int = 0
+    total_chef_resources: int = 0
+    total_chef_attributes: int = 0
+    total_includes: int = 0
+    total_loops: int = 0
+    resource_categories: Dict[str, int] = None
+    has_dynamic_resources: bool = False
+
+    def __post_init__(self):
+        if self.resource_categories is None:
+            self.resource_categories = {}
+
+
+@dataclass
+class DirectorySummary:
+    """Summary statistics for the entire directory."""
+    file_counts: Dict[str, int]
+    total_files: int
+    total_template_files: int
+    total_chef_resources: int
+    total_chef_attributes: int
+    total_loops: int
+    resource_categories: Dict[str, int]
+    has_dynamic_resources: bool
+
+
+@dataclass
+class FileAnalysis:
+    """Complete analysis result for a single file."""
+    file_path: str
+    file_name: str
+    file_stem: str
+    file_category: str
+    type: str
+    chef_resources: List[ChefResource]
+    chef_attributes: List[ChefAttribute]
+    includes: List[str]
+    requires: List[str]
+    loops: List[LoopInfo]
+    classes: List[Dict[str, Any]]  # Keep as dict for now
+    methods: List[Dict[str, Any]]   # Keep as dict for now
+    summary: FileSummary
 
 
 class ChefReporting:
@@ -146,9 +302,13 @@ class ChefReporting:
             if chef_attributes:
                 report_lines.append("Variables assigned:")
                 for attr in chef_attributes:
-                    name = attr.get("name", "unknown")
-                    display_value = attr.get("display_value", attr.get("value", "N/A"))
-                    report_lines.append(f"  • {name} = {display_value}")
+                    if isinstance(attr, ChefAttribute):
+                        report_lines.append(f"  • {attr.name} = {attr.display_value}")
+                    else:
+                        # Fallback for old dict format
+                        name = attr.get("name", "unknown")
+                        display_value = attr.get("display_value", attr.get("value", "N/A"))
+                        report_lines.append(f"  • {name} = {display_value}")
             else:
                 report_lines.append("No Chef attributes detected")
 
@@ -179,7 +339,11 @@ class ChefReporting:
             loops = file_data.get("loops", [])
             if loops:
                 for loop in loops:
-                    expr = loop.get("full_expression", "")
+                    if isinstance(loop, LoopInfo):
+                        expr = loop.full_expression
+                    else:
+                        # Fallback for old dict format
+                        expr = loop.get("full_expression", "")
                     report_lines.append(f"  *Loop detected: {expr}*")
                 report_lines.append("")
 
@@ -193,13 +357,22 @@ class ChefReporting:
             report_lines.append("")
 
     def _add_enriched_resource(
-        self, resource: Dict[str, Any], report_lines: List[str]
+        self, resource, report_lines: List[str]
     ) -> None:
         """Add an enriched Chef resource to the report."""
-        resource_type = resource.get("type", "unknown")
-        resource_name = resource.get("name")
-        has_dynamic_name = resource.get("has_dynamic_name", False)
-        category = resource.get("category", "other")
+        if isinstance(resource, ChefResource):
+            resource_type = resource.type
+            resource_name = resource.name
+            has_dynamic_name = resource.has_dynamic_name
+            category = resource.category
+            important_attrs = resource.important_attributes
+        else:
+            # Fallback for old dict format
+            resource_type = resource.get("type", "unknown")
+            resource_name = resource.get("name")
+            has_dynamic_name = resource.get("has_dynamic_name", False)
+            category = resource.get("category", "other")
+            important_attrs = resource.get("important_attributes", {})
 
         if has_dynamic_name:
             report_lines.append(
@@ -210,7 +383,6 @@ class ChefReporting:
             report_lines.append(f"  • **{resource_type}**{name_part} [{category}]")
 
         # Show important attributes
-        important_attrs = resource.get("important_attributes", {})
         if important_attrs:
             attrs_list = [f"{k}: {v}" for k, v in important_attrs.items()]
             report_lines.append(f"    - {', '.join(attrs_list)}")
@@ -247,7 +419,7 @@ class ChefReporting:
             report_lines.append("")
 
     def _add_templates_section(
-        self, template_files: List[Dict[str, Any]], report_lines: List[str]
+        self, template_files: List[TemplateFile], report_lines: List[str]
     ) -> None:
         """Add template files section using enriched data."""
         if not template_files:
@@ -257,9 +429,13 @@ class ChefReporting:
         report_lines.append("ERB templates used by the cookbook:")
 
         for template in template_files:
-            path = template.get("path", "")
-            purpose = template.get("purpose", "template file")
-            report_lines.append(f"  • `{path}` ({purpose})")
+            if isinstance(template, TemplateFile):
+                report_lines.append(f"  • `{template.path}` ({template.purpose})")
+            else:
+                # Fallback for old dict format
+                path = template.get("path", "")
+                purpose = template.get("purpose", "template file")
+                report_lines.append(f"  • `{path}` ({purpose})")
 
         report_lines.append("")
 
@@ -492,7 +668,7 @@ class RubyParser(BaseTreeSitterParser):
 
     def _parse_chef_resource(
         self, node: Node, content: bytes, resource_type: str
-    ) -> Dict[str, Any]:
+    ) -> ChefResource:
         """Parse a Chef resource with its block and attributes.
 
         Args:
@@ -501,31 +677,31 @@ class RubyParser(BaseTreeSitterParser):
             resource_type: Type of Chef resource (e.g., 'package', 'service')
 
         Returns:
-            Dictionary containing resource information
+            ChefResource instance containing resource information
         """
-        resource = {
-            "type": resource_type,
-            "name": None,
-            "attributes": {},
-            "line": node.start_point[0] + 1,
-            "block_content": None,
-        }
+        resource_name = None
+        attributes = {}
+        block_content = None
 
         # Extract resource name from arguments
         for child in node.children:
             match child.type:
                 case "argument_list":
                     for arg in child.children:
-                        if arg.type == "string" and resource.get("name") is None:
-                            resource["name"] = self.get_node_text(arg, content).strip(
-                                "\"'"
-                            )
+                        if arg.type == "string" and resource_name is None:
+                            resource_name = self.get_node_text(arg, content).strip("\"'")
 
                 case "block" | "do_block":
-                    resource["block_content"] = self.get_node_text(child, content)
-                    resource["attributes"] = self._parse_chef_block(child, content)
+                    block_content = self.get_node_text(child, content)
+                    attributes = self._parse_chef_block(child, content)
 
-        return resource
+        return ChefResource(
+            type=resource_type,
+            name=resource_name,
+            line=node.start_point[0] + 1,
+            attributes=attributes,
+            block_content=block_content,
+        )
 
     def _parse_chef_block(self, block_node: Node, content: bytes) -> Dict[str, Any]:
         """Parse Chef resource block to extract attributes.
@@ -646,14 +822,11 @@ class RubyParser(BaseTreeSitterParser):
         for const in structure.get("constants", []):
             if const.get("type") == "chef_attribute":
                 chef_attributes.append(
-                    {
-                        "name": const.get("name"),
-                        "value": const.get("value"),
-                        "line": const.get("line"),
-                        "display_value": self._format_attribute_value(
-                            const.get("value", "")
-                        ),
-                    }
+                    ChefAttribute(
+                        name=const.get("name", ""),
+                        value=const.get("value", ""),
+                        line=const.get("line", 0),
+                    )
                 )
             else:
                 regular_constants.append(const)
@@ -678,7 +851,7 @@ class RubyParser(BaseTreeSitterParser):
             return value[:77] + "..."
         return value
 
-    def _detect_all_loops(self, content: bytes) -> List[Dict[str, Any]]:
+    def _detect_all_loops(self, content: bytes) -> List[LoopInfo]:
         """Detect all types of loops in the content."""
         loops = []
         content_str = content.decode("utf-8")
@@ -687,54 +860,47 @@ class RubyParser(BaseTreeSitterParser):
         each_pattern = r"(\w+(?:\[.*?\])?)\s*\.\s*each\s+do\s*\|\s*([^|]+)\s*\|"
         for match in re.finditer(each_pattern, content_str):
             loops.append(
-                {
-                    "type": "each",
-                    "variable": match.group(1),
-                    "iterator_vars": match.group(2).strip(),
-                    "full_expression": match.group(0),
-                }
+                LoopInfo(
+                    type="each",
+                    variable=match.group(1),
+                    iterator_vars=match.group(2).strip(),
+                    full_expression=match.group(0),
+                )
             )
 
         return loops
 
     def _enrich_chef_resources(
-        self, resources: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, resources: List[ChefResource]
+    ) -> List[ChefResource]:
         """Enrich Chef resources with additional metadata."""
         enriched = []
 
         for resource in resources:
-            enriched_resource = resource.copy()
-
             # Categorize resource type
-            resource_type = resource.get("type", "")
-            enriched_resource["category"] = self._categorize_chef_resource(
-                resource_type
-            )
+            category = self._categorize_chef_resource(resource.type)
 
             # Analyze resource name
-            resource_name = resource.get("name", "")
-            enriched_resource["has_dynamic_name"] = (
-                "#{" in resource_name if resource_name else False
-            )
+            has_dynamic_name = "#{" in resource.name if resource.name else False
 
             # Extract important attributes for display
-            attributes = resource.get("attributes", {})
             important_attrs = {
                 k: v
-                for k, v in attributes.items()
-                if k
-                in [
-                    "action",
-                    "source",
-                    "mode",
-                    "variables",
-                    "command",
-                    "content",
-                    "path",
-                ]
+                for k, v in resource.attributes.items()
+                if k in IMPORTANT_ATTRIBUTES
             }
-            enriched_resource["important_attributes"] = important_attrs
+
+            # Create enriched resource
+            enriched_resource = ChefResource(
+                type=resource.type,
+                name=resource.name,
+                line=resource.line,
+                attributes=resource.attributes,
+                block_content=resource.block_content,
+                category=category,
+                has_dynamic_name=has_dynamic_name,
+                important_attributes=important_attrs,
+            )
 
             enriched.append(enriched_resource)
 
@@ -742,56 +908,35 @@ class RubyParser(BaseTreeSitterParser):
 
     def _categorize_chef_resource(self, resource_type: str) -> str:
         """Categorize Chef resource types for better organization."""
-        package_resources = ["package", "apt_package", "yum_package", "gem_package"]
-        file_resources = [
-            "file",
-            "template",
-            "cookbook_file",
-            "remote_file",
-            "directory",
-        ]
-        service_resources = ["service"]
-        execution_resources = ["execute", "script", "bash", "ruby_block"]
-        system_resources = ["user", "group", "cron", "mount", "route", "link"]
+        return RESOURCE_CATEGORY_MAP.get(resource_type, "other")
 
-        if resource_type in package_resources:
-            return "package_management"
-        elif resource_type in file_resources:
-            return "file_management"
-        elif resource_type in service_resources:
-            return "service_management"
-        elif resource_type in execution_resources:
-            return "execution"
-        elif resource_type in system_resources:
-            return "system_configuration"
-        else:
-            return "other"
-
-    def _create_file_summary(self, structure: Dict[str, Any]) -> Dict[str, Any]:
+    def _create_file_summary(self, structure: Dict[str, Any]) -> FileSummary:
         """Create a summary of the file's contents."""
-        return {
-            "total_classes": len(structure.get("classes", [])),
-            "total_methods": len(structure.get("methods", [])),
-            "total_chef_resources": len(structure.get("chef_resources", [])),
-            "total_chef_attributes": len(structure.get("chef_attributes", [])),
-            "total_includes": len(structure.get("includes", [])),
-            "total_loops": len(structure.get("loops", [])),
-            "resource_categories": self._count_resource_categories(
-                structure.get("chef_resources", [])
+        chef_resources = structure.get("chef_resources", [])
+        return FileSummary(
+            total_classes=len(structure.get("classes", [])),
+            total_methods=len(structure.get("methods", [])),
+            total_chef_resources=len(chef_resources),
+            total_chef_attributes=len(structure.get("chef_attributes", [])),
+            total_includes=len(structure.get("includes", [])),
+            total_loops=len(structure.get("loops", [])),
+            resource_categories=self._count_resource_categories(chef_resources),
+            has_dynamic_resources=any(
+                r.has_dynamic_name for r in chef_resources if isinstance(r, ChefResource)
             ),
-            "has_dynamic_resources": any(
-                r.get("has_dynamic_name", False)
-                for r in structure.get("chef_resources", [])
-            ),
-        }
+        )
 
     def _count_resource_categories(
-        self, resources: List[Dict[str, Any]]
+        self, resources: List[ChefResource]
     ) -> Dict[str, int]:
         """Count resources by category."""
         categories = {}
         for resource in resources:
-            category = resource.get("category", "other")
+            if isinstance(resource, ChefResource):
+                category = resource.category
+            else:
+                # Fallback for old dict format during transition
+                category = resource.get("category", "other")
             categories[category] = categories.get(category, 0) + 1
         return categories
 
@@ -882,15 +1027,17 @@ class TreeSitterAnalyzer:
         """
         try:
             path = Path(file_path)
-            match path.suffix:
-                case ".rb":
-                    return self.ruby_parser.parse_file(file_path)
-                case ".json":
-                    return self.json_parser.parse_file(file_path)
-                case _:
-                    error_msg = f"Unsupported file type: {file_path}"
-                    logger.warning(error_msg)
-                    return {"error": error_msg}
+            file_extension = path.suffix
+            parser_type = FILE_EXTENSION_PARSER_MAP.get(file_extension)
+            
+            if parser_type == "ruby":
+                return self.ruby_parser.parse_file(file_path)
+            elif parser_type == "json":
+                return self.json_parser.parse_file(file_path)
+            else:
+                error_msg = f"Unsupported file type: {file_path}"
+                logger.warning(error_msg)
+                return {"error": error_msg}
         except Exception as e:
             error_msg = f"Failed to determine file type for {file_path}: {str(e)}"
             logger.error(error_msg, exc_info=True)
@@ -978,17 +1125,13 @@ class TreeSitterAnalyzer:
         self, analysis: Dict[str, Any], rel_path: str
     ) -> Dict[str, Any]:
         """Categorize file and add enrichment metadata."""
-        # Determine file category
-        if rel_path.startswith("attributes/"):
-            analysis["file_category"] = "attributes"
-        elif rel_path.startswith("recipes/"):
-            analysis["file_category"] = "recipes"
-        elif rel_path.startswith("resources/"):
-            analysis["file_category"] = "resources"
-        elif rel_path == "metadata.rb":
-            analysis["file_category"] = "metadata"
-        else:
-            analysis["file_category"] = "other"
+        # Determine file category using lookup table
+        category = "other"  # default
+        for pattern, cat in FILE_CATEGORY_MAP.items():
+            if rel_path.startswith(pattern) or rel_path == pattern:
+                category = cat
+                break
+        analysis["file_category"] = category
 
         # Add file metadata
         analysis["file_path"] = rel_path
@@ -1007,7 +1150,7 @@ class TreeSitterAnalyzer:
         else:
             categorized["other"][rel_path] = analysis
 
-    def _find_template_files(self, directory_path: str) -> List[Dict[str, Any]]:
+    def _find_template_files(self, directory_path: str) -> List[TemplateFile]:
         """Find and categorize template files."""
         template_files = []
         try:
@@ -1015,32 +1158,26 @@ class TreeSitterAnalyzer:
             for template_path in path.rglob("*.erb"):
                 rel_path = template_path.relative_to(path)
                 template_files.append(
-                    {
-                        "path": str(rel_path),
-                        "name": template_path.name,
-                        "purpose": self._infer_template_purpose(str(rel_path)),
-                    }
+                    TemplateFile(
+                        path=str(rel_path),
+                        name=template_path.name,
+                        purpose=self._infer_template_purpose(str(rel_path)),
+                    )
                 )
         except Exception as e:
             logger.warning(f"Failed to scan for template files: {e}")
-        return sorted(template_files, key=lambda x: x["path"])
+        return sorted(template_files, key=lambda x: x.path)
 
     def _infer_template_purpose(self, template_path: str) -> str:
         """Infer the purpose of a template from its path."""
         template_lower = template_path.lower()
-
-        if "config" in template_lower:
-            return "configuration file"
-        elif "service" in template_lower:
-            return "service definition"
-        elif "init" in template_lower:
-            return "initialization script"
-        elif "nginx" in template_lower:
-            return "nginx configuration"
-        elif "site" in template_lower:
-            return "site configuration"
-        else:
-            return "template file"
+        
+        # Check for matches in template purpose mapping
+        for keyword, purpose in TEMPLATE_PURPOSE_MAP.items():
+            if keyword in template_lower:
+                return purpose
+        
+        return "template file"
 
     def _generate_directory_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:
         """Generate comprehensive directory summary."""
@@ -1066,7 +1203,11 @@ class TreeSitterAnalyzer:
 
                 # Count resource categories
                 for resource in resources:
-                    category = resource.get("category", "other")
+                    if isinstance(resource, ChefResource):
+                        category = resource.category
+                    else:
+                        # Fallback for old dict format
+                        category = resource.get("category", "other")
                     resource_categories[category] = (
                         resource_categories.get(category, 0) + 1
                     )
@@ -1087,8 +1228,13 @@ class TreeSitterAnalyzer:
         for file_data in files.values():
             if "error" not in file_data:
                 for resource in file_data.get("chef_resources", []):
-                    if resource.get("has_dynamic_name", False):
-                        return True
+                    if isinstance(resource, ChefResource):
+                        if resource.has_dynamic_name:
+                            return True
+                    else:
+                        # Fallback for old dict format
+                        if resource.get("has_dynamic_name", False):
+                            return True
         return False
 
     def report_directory(self, directory_path: str) -> str:
