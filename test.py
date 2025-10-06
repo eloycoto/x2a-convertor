@@ -11,7 +11,7 @@ from tree_sitter import Language, Parser, Node
 from typing import Dict, List, Any, Optional
 
 #FOLDER = "/home/eloy/dev/upstream/x2ansible/chef-example/cookbooks/cache/"
-#FOLDER = "/home/eloy/dev/upstream/x2ansible/chef-example/cookbooks/nginx-multisite/"
+FOLDER = "/home/eloy/dev/upstream/x2ansible/chef-example/cookbooks/nginx-multisite/"
 
 # Chef-specific constants
 CHEF_RESOURCES = [
@@ -59,45 +59,6 @@ CHEF_ATTRIBUTES = [
 ]
 
 # Lookup tables for better maintainability
-RESOURCE_CATEGORY_MAP = {
-    # Package management
-    "package": "package_management",
-    "apt_package": "package_management", 
-    "yum_package": "package_management",
-    "gem_package": "package_management",
-
-    # File management
-    "file": "file_management",
-    "template": "file_management",
-    "cookbook_file": "file_management",
-    "remote_file": "file_management",
-    "directory": "file_management",
-    
-    # Service management
-    "service": "service_management",
-    
-    # Execution
-    "execute": "execution",
-    "script": "execution", 
-    "bash": "execution",
-    "ruby_block": "execution",
-    
-    # System configuration
-    "user": "system_configuration",
-    "group": "system_configuration",
-    "cron": "system_configuration",
-    "mount": "system_configuration",
-    "route": "system_configuration",
-    "link": "system_configuration",
-}
-
-TEMPLATE_PURPOSE_MAP = {
-    "config": "configuration file",
-    "service": "service definition", 
-    "init": "initialization script",
-    "nginx": "nginx configuration",
-    "site": "site configuration",
-}
 
 FILE_EXTENSION_PARSER_MAP = {
     ".rb": "ruby",
@@ -256,9 +217,6 @@ class ChefReporting:
         self._add_metadata_section(categorized.get("metadata", {}), report_lines)
         self._add_templates_section(template_files, report_lines)
 
-        # Add summary using pre-calculated data
-        self._add_summary_section(summary, report_lines)
-
         return "\n".join(report_lines)
 
     def _convert_include_to_path(self, include: str) -> str:
@@ -376,11 +334,11 @@ class ChefReporting:
 
         if has_dynamic_name:
             report_lines.append(
-                f"  • **{resource_type}** (dynamic name: `{resource_name}`) [{category}]"
+                f"  • **{resource_type}** (dynamic name: `{resource_name}`)"
             )
         else:
             name_part = f" '{resource_name}'" if resource_name else ""
-            report_lines.append(f"  • **{resource_type}**{name_part} [{category}]")
+            report_lines.append(f"  • **{resource_type}**{name_part}")
 
         # Show important attributes
         if important_attrs:
@@ -439,42 +397,6 @@ class ChefReporting:
 
         report_lines.append("")
 
-    def _add_summary_section(
-        self, summary: Dict[str, Any], report_lines: List[str]
-    ) -> None:
-        """Add summary section using pre-calculated summary data."""
-        report_lines.extend(["## Summary", ""])
-
-        file_counts = summary.get("file_counts", {})
-        total_resources = summary.get("total_chef_resources", 0)
-        total_attributes = summary.get("total_chef_attributes", 0)
-        total_templates = summary.get("total_template_files", 0)
-        resource_categories = summary.get("resource_categories", {})
-
-        report_lines.append("**Cookbook Structure:**")
-        report_lines.append(f"  • {file_counts.get('recipes', 0)} recipe files")
-        report_lines.append(f"  • {file_counts.get('attributes', 0)} attribute files")
-        report_lines.append(
-            f"  • {file_counts.get('resources', 0)} custom resource files"
-        )
-        report_lines.append(f"  • {total_templates} template files")
-        report_lines.append(f"  • {total_resources} total Chef resources defined")
-        report_lines.append(f"  • {total_attributes} Chef attributes configured")
-        report_lines.append("")
-
-        if resource_categories:
-            report_lines.append("**Resource Categories:**")
-            for category, count in resource_categories.items():
-                category_name = category.replace("_", " ").title()
-                report_lines.append(f"  • {category_name}: {count} resources")
-            report_lines.append("")
-
-        report_lines.extend(
-            [
-                "This cookbook follows standard Chef conventions with recipes defining the desired state,",
-                "attributes providing configurable values, and templates for dynamic file generation.",
-            ]
-        )
 
 
 class BaseTreeSitterParser(ABC):
@@ -877,9 +799,6 @@ class RubyParser(BaseTreeSitterParser):
         enriched = []
 
         for resource in resources:
-            # Categorize resource type
-            category = self._categorize_chef_resource(resource.type)
-
             # Analyze resource name
             has_dynamic_name = "#{" in resource.name if resource.name else False
 
@@ -897,7 +816,7 @@ class RubyParser(BaseTreeSitterParser):
                 line=resource.line,
                 attributes=resource.attributes,
                 block_content=resource.block_content,
-                category=category,
+                category="other",  # Simplified - no categorization
                 has_dynamic_name=has_dynamic_name,
                 important_attributes=important_attrs,
             )
@@ -906,9 +825,6 @@ class RubyParser(BaseTreeSitterParser):
 
         return enriched
 
-    def _categorize_chef_resource(self, resource_type: str) -> str:
-        """Categorize Chef resource types for better organization."""
-        return RESOURCE_CATEGORY_MAP.get(resource_type, "other")
 
     def _create_file_summary(self, structure: Dict[str, Any]) -> FileSummary:
         """Create a summary of the file's contents."""
@@ -920,25 +836,12 @@ class RubyParser(BaseTreeSitterParser):
             total_chef_attributes=len(structure.get("chef_attributes", [])),
             total_includes=len(structure.get("includes", [])),
             total_loops=len(structure.get("loops", [])),
-            resource_categories=self._count_resource_categories(chef_resources),
+            resource_categories={},  # Simplified - no categories
             has_dynamic_resources=any(
                 r.has_dynamic_name for r in chef_resources if isinstance(r, ChefResource)
             ),
         )
 
-    def _count_resource_categories(
-        self, resources: List[ChefResource]
-    ) -> Dict[str, int]:
-        """Count resources by category."""
-        categories = {}
-        for resource in resources:
-            if isinstance(resource, ChefResource):
-                category = resource.category
-            else:
-                # Fallback for old dict format during transition
-                category = resource.get("category", "other")
-            categories[category] = categories.get(category, 0) + 1
-        return categories
 
 
 class JsonParser(BaseTreeSitterParser):
@@ -1170,13 +1073,6 @@ class TreeSitterAnalyzer:
 
     def _infer_template_purpose(self, template_path: str) -> str:
         """Infer the purpose of a template from its path."""
-        template_lower = template_path.lower()
-        
-        # Check for matches in template purpose mapping
-        for keyword, purpose in TEMPLATE_PURPOSE_MAP.items():
-            if keyword in template_lower:
-                return purpose
-        
         return "template file"
 
     def _generate_directory_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:
@@ -1192,7 +1088,6 @@ class TreeSitterAnalyzer:
         total_resources = 0
         total_attributes = 0
         total_loops = 0
-        resource_categories = {}
 
         for file_data in results["files"].values():
             if "error" not in file_data:
@@ -1201,17 +1096,6 @@ class TreeSitterAnalyzer:
                 total_attributes += len(file_data.get("chef_attributes", []))
                 total_loops += len(file_data.get("loops", []))
 
-                # Count resource categories
-                for resource in resources:
-                    if isinstance(resource, ChefResource):
-                        category = resource.category
-                    else:
-                        # Fallback for old dict format
-                        category = resource.get("category", "other")
-                    resource_categories[category] = (
-                        resource_categories.get(category, 0) + 1
-                    )
-
         return {
             "file_counts": file_counts,
             "total_files": len(results["files"]),
@@ -1219,7 +1103,6 @@ class TreeSitterAnalyzer:
             "total_chef_resources": total_resources,
             "total_chef_attributes": total_attributes,
             "total_loops": total_loops,
-            "resource_categories": resource_categories,
             "has_dynamic_resources": self._has_dynamic_resources(results["files"]),
         }
 
