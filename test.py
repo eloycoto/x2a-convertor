@@ -7,27 +7,19 @@ import tree_sitter_json as tsjson
 
 FOLDER = "/home/eloy/dev/upstream/x2ansible/chef-example/cookbooks/nginx-multisite/"
 
-class TreeSitterAnalyzer:
+class RubyParser:
     def __init__(self):
-        self.ruby_language = Language(tsruby.language())
-        self.json_language = Language(tsjson.language())
-        self.ruby_parser = Parser(self.ruby_language)
-        self.json_parser = Parser(self.json_language)
+        ruby_language = Language(tsruby.language())
+        self.parser = Parser(ruby_language)
     
     def parse_file(self, file_path: str):
-        """Parse a file and return its AST structure"""
+        """Parse Ruby file and return Chef structure"""
         try:
             with open(file_path, 'rb') as f:
                 content = f.read()
             
-            if file_path.endswith('.rb'):
-                tree = self.ruby_parser.parse(content)
-                return self._extract_ruby_structure(tree.root_node, content)
-            elif file_path.endswith('.json'):
-                tree = self.json_parser.parse(content)
-                return self._extract_json_structure(tree.root_node, content)
-            else:
-                return {"error": f"Unsupported file type: {file_path}"}
+            tree = self.parser.parse(content)
+            return self._extract_ruby_structure(tree.root_node, content)
         except Exception as e:
             return {"error": f"Failed to parse {file_path}: {str(e)}"}
     
@@ -46,70 +38,52 @@ class TreeSitterAnalyzer:
         self._traverse_ruby_node(node, content, structure, debug=False)
         return structure
     
-    def _extract_json_structure(self, node, content):
-        """Extract structure from JSON AST"""
-        structure = {
-            "type": "json_file",
-            "keys": [],
-            "structure": {}
-        }
-        
-        self._traverse_json_node(node, content, structure)
-        return structure
-    
     def _traverse_ruby_node(self, node, content, structure, debug=False):
         """Traverse Ruby AST and extract Chef-specific patterns"""
-        if debug and node.type == 'call':
-            method_node = node.child_by_field_name('method')
-            if method_node:
-                method_name = self._get_node_text(method_node, content)
-                print(f"DEBUG: Found call to '{method_name}' at line {node.start_point[0] + 1}")
-        
-        if node.type == 'class':
-            class_name = self._get_node_text(node.child_by_field_name('name'), content)
-            structure["classes"].append({
-                "name": class_name,
-                "line": node.start_point[0] + 1
-            })
-        
-        elif node.type == 'method':
-            method_name = self._get_node_text(node.child_by_field_name('name'), content)
-            structure["methods"].append({
-                "name": method_name,
-                "line": node.start_point[0] + 1
-            })
-        
-        elif node.type == 'call':
-            method_node = node.child_by_field_name('method')
-            if method_node:
-                method_name = self._get_node_text(method_node, content)
-                
-                # Chef-specific resource detection
-                chef_resources = [
-                    'package', 'service', 'file', 'template', 'cookbook_file',
-                    'directory', 'user', 'group', 'execute', 'script', 'cron',
-                    'mount', 'route', 'apt_package', 'yum_package', 'gem_package',
-                    'remote_file', 'link', 'ruby_block', 'bash', 'powershell_script'
-                ]
-                
-                if method_name in chef_resources:
-                    resource = self._parse_chef_resource(node, content, method_name)
-                    structure["chef_resources"].append(resource)
-                
-                # Include/require detection
-                elif method_name in ['include_recipe', 'require']:
-                    args = self._extract_string_args(node, content)
-                    if method_name == 'include_recipe':
-                        structure["includes"].extend(args)
-                    else:
-                        structure["requires"].extend(args)
-        
-        elif node.type == 'assignment':
-            left = node.child_by_field_name('left')
-            if left and left.type in ['constant', 'call']:
-                assignment = self._parse_assignment(node, content)
-                if assignment:
-                    structure["constants"].append(assignment)
+        match node.type:
+            case 'class':
+                class_name = self._get_node_text(node.child_by_field_name('name'), content)
+                structure.get("classes", []).append({
+                    "name": class_name,
+                    "line": node.start_point[0] + 1
+                })
+            
+            case 'method':
+                method_name = self._get_node_text(node.child_by_field_name('name'), content)
+                structure.get("methods", []).append({
+                    "name": method_name,
+                    "line": node.start_point[0] + 1
+                })
+            
+            case 'call':
+                method_node = node.child_by_field_name('method')
+                if method_node:
+                    method_name = self._get_node_text(method_node, content)
+                    
+                    # Chef-specific resource detection
+                    chef_resources = [
+                        'package', 'service', 'file', 'template', 'cookbook_file',
+                        'directory', 'user', 'group', 'execute', 'script', 'cron',
+                        'mount', 'route', 'apt_package', 'yum_package', 'gem_package',
+                        'remote_file', 'link', 'ruby_block', 'bash', 'powershell_script'
+                    ]
+                    
+                    match method_name:
+                        case name if name in chef_resources:
+                            resource = self._parse_chef_resource(node, content, method_name)
+                            structure.get("chef_resources", []).append(resource)
+                        
+                        case 'include_recipe' | 'require':
+                            args = self._extract_string_args(node, content)
+                            target_list = structure.get("includes", []) if method_name == 'include_recipe' else structure.get("requires", [])
+                            target_list.extend(args)
+            
+            case 'assignment':
+                left = node.child_by_field_name('left')
+                if left and left.type in ['constant', 'call']:
+                    assignment = self._parse_assignment(node, content)
+                    if assignment:
+                        structure.get("constants", []).append(assignment)
         
         # Recursively traverse children
         for child in node.children:
@@ -127,84 +101,55 @@ class TreeSitterAnalyzer:
         
         # Extract resource name from arguments
         for child in node.children:
-            if child.type == 'argument_list':
-                for arg in child.children:
-                    if arg.type == 'string':
-                        if resource["name"] is None:
+            match child.type:
+                case 'argument_list':
+                    for arg in child.children:
+                        if arg.type == 'string' and resource.get("name") is None:
                             resource["name"] = self._get_node_text(arg, content).strip('"\'')
-            elif child.type in ['block', 'do_block']:
-                # Parse the resource block for Chef attributes
-                resource["block_content"] = self._get_node_text(child, content)
-                resource["attributes"] = self._parse_chef_block(child, content)
+                
+                case 'block' | 'do_block':
+                    resource["block_content"] = self._get_node_text(child, content)
+                    resource["attributes"] = self._parse_chef_block(child, content)
         
         return resource
     
     def _parse_chef_block(self, block_node, content):
-        """Parse Chef resource block to extract attributes like action, notifies, etc."""
+        """Parse Chef resource block to extract attributes"""
         attributes = {}
         
         def parse_node_for_attributes(node):
-            if node.type == 'call':
-                method_node = node.child_by_field_name('method')
-                if method_node:
-                    attr_name = self._get_node_text(method_node, content)
-                    
-                    # Common Chef resource attributes
-                    if attr_name in ['action', 'notifies', 'subscribes', 'only_if', 'not_if', 
-                                   'user', 'group', 'mode', 'owner', 'source', 'variables',
-                                   'cookbook', 'template', 'path', 'content', 'command', 'supports']:
-                        
-                        attr_value = self._extract_attribute_value(node, content)
+            match node.type:
+                case 'call':
+                    method_node = node.child_by_field_name('method')
+                    if method_node:
+                        attr_name = self._get_node_text(method_node, content)
+                        if attr_name in ['action', 'notifies', 'subscribes', 'only_if', 'not_if', 
+                                       'user', 'group', 'mode', 'owner', 'source', 'variables',
+                                       'cookbook', 'template', 'path', 'content', 'command', 'supports']:
+                            attr_value = self._extract_attribute_value(node, content)
+                            attributes[attr_name] = attr_value
+                
+                case 'assignment':
+                    left = node.child_by_field_name('left')
+                    right = node.child_by_field_name('right')
+                    if left and right:
+                        attr_name = self._get_node_text(left, content)
+                        attr_value = self._get_node_text(right, content)
                         attributes[attr_name] = attr_value
-                        
-            elif node.type == 'assignment':
-                # Handle assignments within resource blocks
-                left = node.child_by_field_name('left')
-                right = node.child_by_field_name('right')
-                if left and right:
-                    attr_name = self._get_node_text(left, content)
-                    attr_value = self._get_node_text(right, content)
-                    attributes[attr_name] = attr_value
             
-            # Recursively parse children
             for child in node.children:
                 parse_node_for_attributes(child)
         
-        # Start parsing from the block node
         parse_node_for_attributes(block_node)
-        
         return attributes
     
     def _extract_attribute_value(self, node, content):
-        """Extract the value of a Chef resource attribute"""
-        # Look for argument list
+        """Extract the value of a Chef resource attribute - simplified"""
         for child in node.children:
             if child.type == 'argument_list':
-                values = []
-                for arg in child.children:
-                    if arg.type == 'string':
-                        values.append(self._get_node_text(arg, content).strip('"\''))
-                    elif arg.type in ['symbol', 'simple_symbol']:
-                        values.append(self._get_node_text(arg, content))
-                    elif arg.type == 'array':
-                        # Handle arrays like action [:enable, :start]
-                        array_values = []
-                        for array_child in arg.children:
-                            if array_child.type in ['string', 'symbol', 'simple_symbol']:
-                                val = self._get_node_text(array_child, content).strip('":')
-                                array_values.append(val)
-                        values.append(array_values)
-                    elif arg.type == 'hash':
-                        # Handle hash values like supports restart: true
-                        hash_text = self._get_node_text(arg, content)
-                        values.append(f"hash: {hash_text}")
-                    elif arg.type not in [',']:  # Skip commas
-                        # Handle other types like booleans, numbers
-                        val = self._get_node_text(arg, content)
-                        if val not in [',', ' ']:
-                            values.append(val)
-                
-                return values[0] if len(values) == 1 else values
+                # Just grab the raw text - much simpler
+                arg_text = self._get_node_text(child, content)
+                return arg_text.strip('() ')
         
         return None
     
@@ -229,23 +174,56 @@ class TreeSitterAnalyzer:
         var_name = self._get_node_text(left, content)
         var_value = self._get_node_text(right, content)
         
-        # Always return assignments - let the caller decide if they're Chef attributes
         return {
             "name": var_name,
             "value": var_value,
-            "type": "chef_attribute" if var_name.startswith('default[') or var_name.startswith('node[') else "variable",
+            "type": "chef_attribute" if var_name.startswith(('default[', 'node[')) else "variable",
             "line": node.start_point[0] + 1
         }
     
+    def _get_node_text(self, node, content):
+        """Get text content of a node"""
+        if node is None:
+            return ""
+        return content[node.start_byte:node.end_byte].decode('utf-8')
+
+
+class JsonParser:
+    def __init__(self):
+        json_language = Language(tsjson.language())
+        self.parser = Parser(json_language)
+    
+    def parse_file(self, file_path: str):
+        """Parse JSON file and return structure"""
+        try:
+            with open(file_path, 'rb') as f:
+                content = f.read()
+            
+            tree = self.parser.parse(content)
+            return self._extract_json_structure(tree.root_node, content)
+        except Exception as e:
+            return {"error": f"Failed to parse {file_path}: {str(e)}"}
+    
+    def _extract_json_structure(self, node, content):
+        """Extract structure from JSON AST"""
+        structure = {
+            "type": "json_file",
+            "keys": [],
+            "structure": {}
+        }
+        
+        self._traverse_json_node(node, content, structure)
+        return structure
+    
     def _traverse_json_node(self, node, content, structure):
         """Traverse JSON AST and extract keys"""
-        if node.type == 'pair':
-            key_node = node.child_by_field_name('key')
-            if key_node:
-                key = self._get_node_text(key_node, content).strip('"')
-                structure["keys"].append(key)
+        match node.type:
+            case 'pair':
+                key_node = node.child_by_field_name('key')
+                if key_node:
+                    key = self._get_node_text(key_node, content).strip('"')
+                    structure.get("keys", []).append(key)
         
-        # Recursively traverse children
         for child in node.children:
             self._traverse_json_node(child, content, structure)
     
@@ -254,6 +232,22 @@ class TreeSitterAnalyzer:
         if node is None:
             return ""
         return content[node.start_byte:node.end_byte].decode('utf-8')
+
+
+class TreeSitterAnalyzer:
+    def __init__(self):
+        self.ruby_parser = RubyParser()
+        self.json_parser = JsonParser()
+    
+    def parse_file(self, file_path: str):
+        """Parse a file using appropriate parser"""
+        match Path(file_path).suffix:
+            case '.rb':
+                return self.ruby_parser.parse_file(file_path)
+            case '.json':
+                return self.json_parser.parse_file(file_path)
+            case _:
+                return {"error": f"Unsupported file type: {file_path}"}
     
     def analyze_directory(self, directory_path: str):
         """Analyze all Ruby and JSON files in a directory"""
@@ -298,8 +292,8 @@ def main():
             print(f"\n{rel_path}:")
             if analysis.get("constants"):
                 print("  Variables assigned:")
-                for const in analysis["constants"]:
-                    print(f"    • {const['name']} = {const.get('value', 'N/A')}")
+                for const in analysis.get("constants", []):
+                    print(f"    • {const.get('name')} = {const.get('value', 'N/A')}")
             else:
                 # Debug: Let's see what we're actually detecting
                 print("  Variables assigned:")
@@ -357,13 +351,13 @@ def main():
                         print(f"    Loop: {loop_var}.each do |{iterator_vars}|")
                 
                 for resource in resources:
-                    print(f"      • {resource['type']}")
+                    print(f"      • {resource.get('type')}")
                     if resource.get('name'):
-                        name = resource['name']
+                        name = resource.get('name')
                         if '#{' in name:  # Template variable in name
                             print(f"        name: {name}")
                     if resource.get('attributes'):
-                        key_attrs = [k for k in resource['attributes'].keys() if k in ['action', 'source', 'mode', 'variables']]
+                        key_attrs = [k for k in resource.get('attributes', {}).keys() if k in ['action', 'source', 'mode', 'variables']]
                         if key_attrs:
                             print(f"        ({', '.join(key_attrs)})")
                             
