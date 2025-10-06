@@ -127,52 +127,8 @@ class TemplateFile:
     purpose: str
 
 
-@dataclass
-class FileSummary:
-    """Summary statistics for a single file."""
-    total_classes: int = 0
-    total_methods: int = 0
-    total_chef_resources: int = 0
-    total_chef_attributes: int = 0
-    total_includes: int = 0
-    total_loops: int = 0
-    resource_categories: Dict[str, int] = None
-    has_dynamic_resources: bool = False
-
-    def __post_init__(self):
-        if self.resource_categories is None:
-            self.resource_categories = {}
 
 
-@dataclass
-class DirectorySummary:
-    """Summary statistics for the entire directory."""
-    file_counts: Dict[str, int]
-    total_files: int
-    total_template_files: int
-    total_chef_resources: int
-    total_chef_attributes: int
-    total_loops: int
-    resource_categories: Dict[str, int]
-    has_dynamic_resources: bool
-
-
-@dataclass
-class FileAnalysis:
-    """Complete analysis result for a single file."""
-    file_path: str
-    file_name: str
-    file_stem: str
-    file_category: str
-    type: str
-    chef_resources: List[ChefResource]
-    chef_attributes: List[ChefAttribute]
-    includes: List[str]
-    requires: List[str]
-    loops: List[LoopInfo]
-    classes: List[Dict[str, Any]]  # Keep as dict for now
-    methods: List[Dict[str, Any]]   # Keep as dict for now
-    summary: FileSummary
 
 
 class ChefReporting:
@@ -208,7 +164,6 @@ class ChefReporting:
         # Use the enriched categorized data
         categorized = analysis_results.get("categorized_files", {})
         template_files = analysis_results.get("template_files", [])
-        summary = analysis_results.get("summary", {})
 
         # Process each file type using enriched data
         self._add_attributes_section(categorized.get("attributes", {}), report_lines)
@@ -764,15 +719,6 @@ class RubyParser(BaseTreeSitterParser):
             structure.get("chef_resources", [])
         )
 
-        # Add file summary
-        structure["summary"] = self._create_file_summary(structure)
-
-    def _format_attribute_value(self, value: str) -> str:
-        """Format attribute value for display, truncating if too long."""
-        if len(value) > 80:
-            return value[:77] + "..."
-        return value
-
     def _detect_all_loops(self, content: bytes) -> List[LoopInfo]:
         """Detect all types of loops in the content."""
         loops = []
@@ -826,21 +772,6 @@ class RubyParser(BaseTreeSitterParser):
         return enriched
 
 
-    def _create_file_summary(self, structure: Dict[str, Any]) -> FileSummary:
-        """Create a summary of the file's contents."""
-        chef_resources = structure.get("chef_resources", [])
-        return FileSummary(
-            total_classes=len(structure.get("classes", [])),
-            total_methods=len(structure.get("methods", [])),
-            total_chef_resources=len(chef_resources),
-            total_chef_attributes=len(structure.get("chef_attributes", [])),
-            total_includes=len(structure.get("includes", [])),
-            total_loops=len(structure.get("loops", [])),
-            resource_categories={},  # Simplified - no categories
-            has_dynamic_resources=any(
-                r.has_dynamic_name for r in chef_resources if isinstance(r, ChefResource)
-            ),
-        )
 
 
 
@@ -1005,9 +936,6 @@ class TreeSitterAnalyzer:
             # Find template files
             results["template_files"] = self._find_template_files(directory_path)
 
-            # Generate overall summary
-            results["summary"] = self._generate_directory_summary(results)
-
             logger.info(f"Analyzed {len(results['files'])} files in {directory_path}")
             return results
 
@@ -1075,50 +1003,7 @@ class TreeSitterAnalyzer:
         """Infer the purpose of a template from its path."""
         return "template file"
 
-    def _generate_directory_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate comprehensive directory summary."""
-        categorized = results["categorized_files"]
 
-        # Count files by category
-        file_counts = {
-            category: len(files) for category, files in categorized.items() if files
-        }
-
-        # Count total Chef resources across all files
-        total_resources = 0
-        total_attributes = 0
-        total_loops = 0
-
-        for file_data in results["files"].values():
-            if "error" not in file_data:
-                resources = file_data.get("chef_resources", [])
-                total_resources += len(resources)
-                total_attributes += len(file_data.get("chef_attributes", []))
-                total_loops += len(file_data.get("loops", []))
-
-        return {
-            "file_counts": file_counts,
-            "total_files": len(results["files"]),
-            "total_template_files": len(results["template_files"]),
-            "total_chef_resources": total_resources,
-            "total_chef_attributes": total_attributes,
-            "total_loops": total_loops,
-            "has_dynamic_resources": self._has_dynamic_resources(results["files"]),
-        }
-
-    def _has_dynamic_resources(self, files: Dict[str, Any]) -> bool:
-        """Check if any files have dynamic Chef resources."""
-        for file_data in files.values():
-            if "error" not in file_data:
-                for resource in file_data.get("chef_resources", []):
-                    if isinstance(resource, ChefResource):
-                        if resource.has_dynamic_name:
-                            return True
-                    else:
-                        # Fallback for old dict format
-                        if resource.get("has_dynamic_name", False):
-                            return True
-        return False
 
     def report_directory(self, directory_path: str) -> str:
         """Generate a comprehensive LLM-friendly report of Chef cookbook structure.
