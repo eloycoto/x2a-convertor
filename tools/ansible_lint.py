@@ -62,8 +62,7 @@ class AnsibleLintTool(BaseTool):
             path = path.resolve()
 
             # Save current directory and change to the ansible directory
-            # This is necessary because ansible-lint runs 'ansible-config dump'
-            # which needs to be executed from a proper Ansible context
+            # This ensures relative paths in lintables work correctly
             original_cwd = os.getcwd()
             try:
                 os.chdir(path)
@@ -72,9 +71,9 @@ class AnsibleLintTool(BaseTool):
                 # Load all built-in rules from ansible-lint package
                 rules_dir = os.path.join(os.path.dirname(ansiblelint.__file__), "rules")
                 options = Options(
-                    # TODO: either set to True (means default) or understand how it works in a disconnected environment
-                    offline=False,
+                    offline=True,  # Prevent external dependencies and ansible-config dump
                     lintables=["."],  # Use current directory since we changed to it
+                    _skip_ansible_syntax_check=True,  # Skip ansible-playbook --syntax-check
                 )
 
                 # all available rules

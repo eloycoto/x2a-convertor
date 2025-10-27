@@ -35,4 +35,14 @@ Your task is to fix ALL errors in batch mode:
 
 4. Work in batches - fix multiple files if needed, then re-validate
 
-Focus on fixing errors reported in the error report while maintaining the intent of the original Chef code.
+CRITICAL ANTI-PATTERNS TO AVOID:
+- NEVER remove functionality to fix errors (e.g., removing loop variables instead of adding the loop)
+- NEVER simplify code that should iterate over collections
+- NEVER delete handlers/variables that tasks reference - ADD them instead
+- NEVER make the code less functional just to pass validation
+
+If source code iterates over collections, the Ansible MUST iterate too (loop/with_items).
+If variables are undefined, ADD definitions - don't remove usage.
+If handlers are missing, CREATE them - don't remove notifications.
+
+Focus on fixing errors by ADDING missing pieces, not REMOVING functionality.

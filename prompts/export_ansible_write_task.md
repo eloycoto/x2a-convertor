@@ -3,7 +3,10 @@ Write ALL files for module: {module}
 CHEF SOURCE PATH: {chef_path}
 ANSIBLE OUTPUT PATH: {ansible_path}
 
-MIGRATION PLAN:
+HIGH-LEVEL MIGRATION PLAN:
+{high_level_migration_plan}
+
+MODULE MIGRATION PLAN:
 {migration_plan}
 
 CHECKLIST:
@@ -37,6 +40,8 @@ For each pending/missing item:
    - notes: Brief description of what was created
 
 Continue until ALL pending/missing items are complete.
+
+OPTIONAL: After all files are written, you can run ansible_lint on the output directory to catch any syntax issues early.
 
 Report format:
 For each completed file: "COMPLETED: source → target"

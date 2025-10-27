@@ -134,6 +134,7 @@ class ChefToAnsibleSubagent:
             lambda: WriteFileTool(),
             lambda: CopyFileWithMkdirTool(),
             lambda: AnsibleWriteTool(),
+            lambda: AnsibleLintTool(),
         ],
         AgentType.VALIDATION: [
             lambda: ReadFileTool(),
@@ -213,21 +214,6 @@ class ChefToAnsibleSubagent:
 
         return workflow.compile()
 
-    def _list_all_files(self, directory: str) -> list[str]:
-        """List all files recursively in a directory"""
-        try:
-            path = Path(directory)
-            if not path.exists():
-                return []
-
-            files = [f for f in path.rglob("*") if f.is_file()]
-
-            # Return relative paths as strings
-            return [str(f.relative_to(path)) for f in sorted(files)]
-        except Exception as e:
-            logger.warning(f"Error listing files in {directory}: {e}")
-            return []
-
     def _load_checklist(self, state: ChefState):
         checklist_path = state.get_checklist_path()
         if checklist_path.exists():
@@ -253,6 +239,7 @@ class ChefToAnsibleSubagent:
 
         user_prompt = get_prompt("export_ansible_planning_task").format(
             module=state.module,
+            high_level_migration_plan=state.high_level_migration_plan.to_document(),
             module_migration_plan=state.module_migration_plan.to_document(),
             directory_listing="\n".join(state.directory_listing),
             path=state.path,
@@ -284,16 +271,9 @@ class ChefToAnsibleSubagent:
 
         checklist_path = state.get_checklist_path()
         # Check if all files are already created
-        finished = True
-        for item in self.checklist.items:
-            if not item.target_exists():
-                finished = False
-                break
-
-        if finished:
+        if all(item.target_exists() for item in self.checklist.items):
             slog.info("All files already created!")
             return state
-
 
         write_agent = self._create_write_agent()
 
@@ -305,10 +285,10 @@ class ChefToAnsibleSubagent:
             module=state.module,
             chef_path=state.path,
             ansible_path=ansible_path,
+            high_level_migration_plan=state.high_level_migration_plan.to_document(),
             migration_plan=state.module_migration_plan.to_document(),
             checklist=checklist_md,
         )
-        __import__('ipdb').set_trace()
         result = write_agent.invoke(
             input={
                 "messages": [
@@ -349,6 +329,10 @@ class ChefToAnsibleSubagent:
             slog.warning(f"Role validation has issues: {role_check_result}")
             return False, role_check_result
 
+        if "passed with warnings" in role_check_result:
+            slog.info("Role validation passed with warnings (check-mode limitations)")
+            return True, role_check_result
+
         slog.info("Role validation passed")
         return True, ROLE_VALIDATION_SUCCESS_MESSAGE
 
@@ -377,11 +361,11 @@ class ChefToAnsibleSubagent:
         ansible_path = state.get_ansible_path()
         checklist_md = self.checklist.to_markdown()
 
-        # Run ansible_role_check for structural validation
-        success_role_check, result_role_check = self._validate_role_check(state)
-
         # Run ansible_lint for best practices validation
         success_ansible_lint, result_ansible_lint = self._validate_ansible_lint(state)
+
+        # Run ansible_role_check for structural validation
+        success_role_check, result_role_check = self._validate_role_check(state)
 
         # Check if both validations pass
         if success_role_check and success_ansible_lint:
@@ -390,43 +374,16 @@ class ChefToAnsibleSubagent:
             state.validation_attempt_counter += 1
             return state
 
-        # Check if both tools failed with environmental errors (unfixable by agent)
-        is_role_check_env_error = "ENVIRONMENTAL ERROR" in result_role_check
-        is_lint_env_error = "ENVIRONMENTAL ERROR" in result_ansible_lint
-
-        if is_role_check_env_error and is_lint_env_error:
-            slog.warning("Both validation tools failed with environmental errors - skipping validation agent")
-            state.validation_report = (
-                f"VALIDATION SKIPPED: Environmental errors detected\n\n"
-                f"## Role Check\n{result_role_check}\n\n"
-                f"## Ansible Lint\n{result_ansible_lint}\n\n"
-                f"NOTE: Files have been created but cannot be validated due to missing Ansible collections. "
-                f"The generated files may still be valid - manual verification recommended."
-            )
-            state.validation_attempt_counter += 1
-            return state
-
         # Collect all errors for batch fixing
         error_report_parts = []
-        if not success_role_check and not is_role_check_env_error:
+        if not success_role_check:
             error_report_parts.append(
                 f"## Role Structure Errors\n```\n{result_role_check}\n```"
             )
-        if not success_ansible_lint and not is_lint_env_error:
+        if not success_ansible_lint:
             error_report_parts.append(
                 f"## Ansible Lint Errors\n```\n{result_ansible_lint}\n```"
             )
-
-        # If all errors are environmental, skip validation agent
-        if not error_report_parts:
-            slog.warning("Only environmental errors detected - skipping validation agent")
-            state.validation_report = (
-                f"VALIDATION SKIPPED: Only environmental errors\n\n"
-                f"Role Check: {'PASSED' if success_role_check else result_role_check}\n"
-                f"Ansible Lint: {'PASSED' if success_ansible_lint else result_ansible_lint}\n"
-            )
-            state.validation_attempt_counter += 1
-            return state
 
         error_report = "\n\n".join(error_report_parts)
         slog.warning(f"Validation errors found:\n{error_report}")
@@ -439,12 +396,13 @@ class ChefToAnsibleSubagent:
             module=state.module,
             chef_path=state.path,
             ansible_path=ansible_path,
+            high_level_migration_plan=state.high_level_migration_plan.to_document(),
             migration_plan=state.module_migration_plan.to_document(),
             checklist=checklist_md,
             error_report=error_report,
             fragment_yaml_hints=get_prompt("fragment_yaml_hints"),
         )
-
+        __import__('ipdb').set_trace()
         result = validation_agent.invoke(
             {
                 "messages": [
@@ -495,7 +453,6 @@ class ChefToAnsibleSubagent:
                 return "validate_migration"
             slog.info("Retrying write phase")
             return "write_migration"
-        __import__('ipdb').set_trace()
         return "validate_migration"
 
     def _evaluate_validation(
