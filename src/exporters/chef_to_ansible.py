@@ -74,7 +74,7 @@ class MigrationPhase(str, Enum):
 
     INITIALIZING = "initializing"
     PLANNING = "planning"
-    EXECUTING = "executing"
+    WRITING = "writing"
     VALIDATING = "validating"
     COMPLETE = "complete"
 
@@ -83,7 +83,7 @@ class AgentType(str, Enum):
     """Types of agents used in the migration workflow"""
 
     PLANNING = "planning"
-    EXECUTION = "execution"
+    WRITE = "write"
     VALIDATION = "validation"
 
 
@@ -96,7 +96,8 @@ class ChefState:
     high_level_migration_plan: DocumentFile
     directory_listing: list[str]
     current_phase: str
-    export_attempt_counter: int
+    write_attempt_counter: int
+    validation_attempt_counter: int
     validation_report: str
     last_output: str
 
@@ -114,8 +115,8 @@ class ChefToAnsibleSubagent:
 
     Uses a three-agent workflow:
     1. Planning Agent: Analyzes migration plan and creates detailed checklist
-    2. Execution Agent: Processes checklist items and generates Ansible artifacts
-    3. Validation Agent: Verifies artifacts and updates checklist status
+    2. Write Agent: Creates all files from checklist (loops until all files exist)
+    3. Validation Agent: Runs lint/role-check and fixes issues in batch mode
     """
 
     # Configuration mapping: agent type -> list of tool factory functions
@@ -126,15 +127,13 @@ class ChefToAnsibleSubagent:
             lambda: ReadFileTool(),
             lambda: FileSearchTool(),
         ],
-        AgentType.EXECUTION: [
+        AgentType.WRITE: [
             lambda: FileSearchTool(),
             lambda: ListDirectoryTool(),
             lambda: ReadFileTool(),
             lambda: WriteFileTool(),
             lambda: CopyFileWithMkdirTool(),
             lambda: AnsibleWriteTool(),
-            lambda: AnsibleLintTool(),
-            lambda: AnsibleRoleCheckTool(),
         ],
         AgentType.VALIDATION: [
             lambda: ReadFileTool(),
@@ -145,6 +144,7 @@ class ChefToAnsibleSubagent:
             lambda: AnsibleWriteTool(),
             lambda: CopyFileWithMkdirTool(),
             lambda: AnsibleLintTool(),
+            lambda: AnsibleRoleCheckTool(),
         ],
     }
 
@@ -188,48 +188,9 @@ class ChefToAnsibleSubagent:
         """Create agent for analyzing migration plan and building checklist"""
         return self._create_agent(AgentType.PLANNING)
 
-    def _create_execution_agent(self):
-        """Create agent for executing migrations and generating Ansible files"""
-        read_file_name = ReadFileTool().name
-
-        def clean_read_file(state):
-            messages = state.get("messages", [])
-            read_file_msgs = [
-                msg
-                for msg in messages
-                if isinstance(msg, ToolMessage) and msg.name == read_file_name
-            ]
-
-            if len(read_file_msgs) <= 3:
-                return {"messages": messages}
-
-            # Collect tool_call_ids of the first 2 read_file messages to remove
-            call_ids_to_remove = {msg.tool_call_id for msg in read_file_msgs[:2]}
-
-            # Filter messages
-            new_messages = []
-            for msg in messages:
-                # Skip read_file ToolMessages we want to remove
-                if (
-                    isinstance(msg, ToolMessage)
-                    and msg.tool_call_id in call_ids_to_remove
-                ):
-                    continue
-
-                # For AIMessages with tool_calls, remove the read_file tool_calls
-                if hasattr(msg, "tool_calls") and msg.tool_calls:
-                    msg.tool_calls = [
-                        tc
-                        for tc in msg.tool_calls
-                        if tc.get("id") not in call_ids_to_remove
-                    ]
-
-                new_messages.append(msg)
-
-            logger.info(f"Trimmed {len(call_ids_to_remove)} read_file messages")
-            return {"messages": new_messages}
-
-        return self._create_agent(AgentType.EXECUTION, pre_model_hook=clean_read_file)
+    def _create_write_agent(self):
+        """Create agent for writing all files from checklist"""
+        return self._create_agent(AgentType.WRITE)
 
     def _create_validation_agent(self):
         """Create agent for validating migration completeness and correctness"""
@@ -238,17 +199,15 @@ class ChefToAnsibleSubagent:
     def _create_workflow(self):
         workflow = StateGraph(ChefState)
         workflow.add_node("plan_migration", lambda state: self._plan_migration(state))
-        workflow.add_node(
-            "execute_migration", lambda state: self._execute_migration(state)
-        )
+        workflow.add_node("write_migration", lambda state: self._write_migration(state))
         workflow.add_node(
             "validate_migration", lambda state: self._validate_migration(state)
         )
         workflow.add_node("finalize", lambda state: self._finalize(state))
 
         workflow.add_edge(START, "plan_migration")
-        workflow.add_edge("plan_migration", "execute_migration")
-        workflow.add_edge("execute_migration", "validate_migration")
+        workflow.add_edge("plan_migration", "write_migration")
+        workflow.add_conditional_edges("write_migration", self._evaluate_write)
         workflow.add_conditional_edges("validate_migration", self._evaluate_validation)
         workflow.add_edge("finalize", END)
 
@@ -315,38 +274,42 @@ class ChefToAnsibleSubagent:
 
         return state
 
-    def _execute_migration(self, state: ChefState) -> ChefState:
-        """Phase 2: Execute migration tasks from checklist"""
-        slog = logger.bind(
-            phase="execute_migration", attempt=state.export_attempt_counter
-        )
-        slog.info("Executing migration")
-        state.current_phase = MigrationPhase.EXECUTING
+    def _write_migration(self, state: ChefState) -> ChefState:
+        """Phase 2: Write all files from checklist"""
+        slog = logger.bind(phase="write_migration", attempt=state.write_attempt_counter)
+        slog.info("Writing migration files")
+        state.current_phase = MigrationPhase.WRITING
 
-        slog.debug(f"Checklist before execution:\n{self.checklist.to_markdown()}")
+        slog.debug(f"Checklist before writing:\n{self.checklist.to_markdown()}")
 
         checklist_path = state.get_checklist_path()
+        # Check if all files are already created
+        finished = True
+        for item in self.checklist.items:
+            if not item.target_exists():
+                finished = False
+                break
 
-        self.execution_agent = self._create_execution_agent()
+        if finished:
+            slog.info("All files already created!")
+            return state
+
+
+        write_agent = self._create_write_agent()
 
         checklist_md = self.checklist.to_markdown()
         ansible_path = state.get_ansible_path()
 
-        validation_report_formatted = ""
-        if state.validation_report:
-            validation_report_formatted = f"VALIDATION REPORT FROM A PREVIOUS ATTEMPT:\n{state.validation_report}\n"
-
-        system_message = get_prompt("export_ansible_execution_system")
-        user_prompt = get_prompt("export_ansible_execution_task").format(
+        system_message = get_prompt("export_ansible_write_system")
+        user_prompt = get_prompt("export_ansible_write_task").format(
             module=state.module,
             chef_path=state.path,
             ansible_path=ansible_path,
             migration_plan=state.module_migration_plan.to_document(),
             checklist=checklist_md,
-            validation_report=validation_report_formatted,
-            fragment_yaml_hints=get_prompt("fragment_yaml_hints"),
         )
-        result = self.execution_agent.invoke(
+        __import__('ipdb').set_trace()
+        result = write_agent.invoke(
             input={
                 "messages": [
                     {"role": "system", "content": system_message},
@@ -355,18 +318,18 @@ class ChefToAnsibleSubagent:
             },
             config=get_runnable_config(),
         )
-        slog.info(f"Execution agent tools: {report_tool_calls(result).to_string()}")
+        slog.info(f"Write agent tools: {report_tool_calls(result).to_string()}")
         self.checklist.save(checklist_path)
 
-        slog.info(f"Checklist after execution:\n{self.checklist.to_markdown()}")
+        slog.info(f"Checklist after writing:\n{self.checklist.to_markdown()}")
         message = get_last_ai_message(result)
         if message:
             state.last_output = message.content
-            slog.info("Execution phase completed")
+            slog.info("Write phase completed")
         else:
-            slog.warning("Execution agent did not produce output")
+            slog.warning("Write agent did not produce output")
 
-        state.export_attempt_counter += 1
+        state.write_attempt_counter += 1
         return state
 
     def _validate_role_check(self, state: ChefState) -> tuple[bool, str]:
@@ -389,24 +352,6 @@ class ChefToAnsibleSubagent:
         slog.info("Role validation passed")
         return True, ROLE_VALIDATION_SUCCESS_MESSAGE
 
-    def _validate_file_existence(self, state: ChefState) -> bool:
-        """Validate that all files in the checklist exist"""
-        slog = logger.bind(phase="validate_migration_file_existence")
-        slog.info("Validating file existence")
-
-        success = True
-        for item in self.checklist.items:
-            if not item.target_exists():
-                slog.error(
-                    f"Checklist target file {item.target_path} does not exist in Ansible output"
-                )
-                self.checklist.update_task(
-                    item.source_path, item.target_path, ChecklistStatus.MISSING
-                )
-                success = False
-
-        return success
-
     def _validate_ansible_lint(self, state: ChefState) -> tuple[bool, str]:
         """Run ansible_lint on every MigrationCategory.RECIPES and MigrationCategory.STRUCTURE"""
         slog = logger.bind(phase="validate_migration_ansible_lint")
@@ -414,49 +359,79 @@ class ChefToAnsibleSubagent:
 
         ansible_path = state.get_ansible_path()
         ansible_lint_tool = AnsibleLintTool()
-        result = ansible_lint_tool.run(ansible_path)
+        print(f"## Running lintin {ansible_path}")
+        result = ansible_lint_tool._run(ansible_path)
+        print(f"## result")
 
         return result == ANSIBLE_LINT_TOOL_SUCCESS_MESSAGE, result
 
     def _validate_migration(self, state: ChefState) -> ChefState:
-        """Phase 3: Validate migration completeness and correctness"""
+        """Phase 3: Validate and fix issues in batch mode"""
         slog = logger.bind(
-            phase="validate_migration", export_attempt=state.export_attempt_counter
+            phase="validate_migration", attempt=state.validation_attempt_counter
         )
-        slog.info("Validating migration output")
+        slog.info("Validating and fixing migration output")
         state.current_phase = MigrationPhase.VALIDATING
         state.validation_report = ""
 
-        # Check completeness of existence of all files in checklist
-        if not self._validate_file_existence(state):
-            slog.error("File existence validation failed")
-            self.checklist.save(state.get_checklist_path())
-            return state
-
-        # Run ansible_lint on the folder
-        [successAnsibleLint, resultAnsibleLint] = self._validate_ansible_lint(state)
-        if not successAnsibleLint:
-            slog.error("Ansible lint validation failed")
-            state.validation_report = (
-                f"ERROR:Ansible lint validation failed:\n```{resultAnsibleLint}```"
-            )
-            return state
-
-        # Run structural validation
-        successRoleCheck, resultRoleCheck = self._validate_role_check(state)
-        if not successRoleCheck:
-            slog.error("Role validation failed")
-            state.validation_report = (
-                f"ERROR: Ansible role validation failed:\n```{resultRoleCheck}```"
-            )
-            return state
-
-        # Agent-based validation for additional checks
-        # TODO: Does it still bring a value?
         ansible_path = state.get_ansible_path()
         checklist_md = self.checklist.to_markdown()
 
-        # Create validation agent
+        # Run ansible_role_check for structural validation
+        success_role_check, result_role_check = self._validate_role_check(state)
+
+        # Run ansible_lint for best practices validation
+        success_ansible_lint, result_ansible_lint = self._validate_ansible_lint(state)
+
+        # Check if both validations pass
+        if success_role_check and success_ansible_lint:
+            slog.info("All validations passed")
+            state.validation_report = f"{SUMMARY_SUCCESS_MESSAGE}\n\nRole Check: {result_role_check}\nAnsible Lint: {result_ansible_lint}"
+            state.validation_attempt_counter += 1
+            return state
+
+        # Check if both tools failed with environmental errors (unfixable by agent)
+        is_role_check_env_error = "ENVIRONMENTAL ERROR" in result_role_check
+        is_lint_env_error = "ENVIRONMENTAL ERROR" in result_ansible_lint
+
+        if is_role_check_env_error and is_lint_env_error:
+            slog.warning("Both validation tools failed with environmental errors - skipping validation agent")
+            state.validation_report = (
+                f"VALIDATION SKIPPED: Environmental errors detected\n\n"
+                f"## Role Check\n{result_role_check}\n\n"
+                f"## Ansible Lint\n{result_ansible_lint}\n\n"
+                f"NOTE: Files have been created but cannot be validated due to missing Ansible collections. "
+                f"The generated files may still be valid - manual verification recommended."
+            )
+            state.validation_attempt_counter += 1
+            return state
+
+        # Collect all errors for batch fixing
+        error_report_parts = []
+        if not success_role_check and not is_role_check_env_error:
+            error_report_parts.append(
+                f"## Role Structure Errors\n```\n{result_role_check}\n```"
+            )
+        if not success_ansible_lint and not is_lint_env_error:
+            error_report_parts.append(
+                f"## Ansible Lint Errors\n```\n{result_ansible_lint}\n```"
+            )
+
+        # If all errors are environmental, skip validation agent
+        if not error_report_parts:
+            slog.warning("Only environmental errors detected - skipping validation agent")
+            state.validation_report = (
+                f"VALIDATION SKIPPED: Only environmental errors\n\n"
+                f"Role Check: {'PASSED' if success_role_check else result_role_check}\n"
+                f"Ansible Lint: {'PASSED' if success_ansible_lint else result_ansible_lint}\n"
+            )
+            state.validation_attempt_counter += 1
+            return state
+
+        error_report = "\n\n".join(error_report_parts)
+        slog.warning(f"Validation errors found:\n{error_report}")
+
+        # Create validation agent to fix errors
         validation_agent = self._create_validation_agent()
 
         validation_system = get_prompt("export_ansible_validation_system")
@@ -466,6 +441,8 @@ class ChefToAnsibleSubagent:
             ansible_path=ansible_path,
             migration_plan=state.module_migration_plan.to_document(),
             checklist=checklist_md,
+            error_report=error_report,
+            fragment_yaml_hints=get_prompt("fragment_yaml_hints"),
         )
 
         result = validation_agent.invoke(
@@ -479,46 +456,72 @@ class ChefToAnsibleSubagent:
         )
 
         slog.info(f"Validation agent tools: {report_tool_calls(result).to_string()}")
+        self.checklist.save(state.get_checklist_path())
+
         # Extract validation report
         message = get_last_ai_message(result)
-        # TODO: Potential infinite loop if the LLM did not change the checklist statuses
         state.validation_report = message.content if message else "No validation output"
 
         slog.info("Validation phase completed")
-        self.checklist.save(state.get_checklist_path())
+        state.validation_attempt_counter += 1
 
         return state
 
+    def _evaluate_write(
+        self, state: ChefState
+    ) -> Literal["write_migration", "validate_migration"]:
+        """Decide whether to retry writing or proceed to validation"""
+        slog = logger.bind(phase="evaluate_write")
+        slog.info("Evaluating write results")
+
+        # Check file existence for all checklist items
+        missing_files = []
+        for item in self.checklist.items:
+            if not item.target_exists():
+                missing_files.append(item.target_path)
+                self.checklist.update_task(
+                    item.source_path, item.target_path, ChecklistStatus.MISSING
+                )
+
+        self.checklist.save(state.get_checklist_path())
+        slog.info("All files created, proceeding to validation")
+
+        if missing_files:
+            slog.warning(f"Missing {len(missing_files)} files: {missing_files[:5]}...")
+            if state.write_attempt_counter >= get_config_int("MAX_WRITE_ATTEMPTS"):
+                slog.error(
+                    f"Max write attempts ({get_config_int('MAX_WRITE_ATTEMPTS')}) reached, proceeding to validation anyway"
+                )
+                return "validate_migration"
+            slog.info("Retrying write phase")
+            return "write_migration"
+        __import__('ipdb').set_trace()
+        return "validate_migration"
+
     def _evaluate_validation(
         self, state: ChefState
-    ) -> Literal["finalize", "execute_migration"]:
-        """Decide whether to finalize or retry execution based on validation"""
+    ) -> Literal["finalize", "validate_migration"]:
+        """Decide whether to finalize or retry validation based on results"""
         slog = logger.bind(phase="evaluate_validation")
         slog.info("Evaluating validation results")
 
-        stats = self.checklist.get_stats()
-        slog.info(f"Checklist stats: {stats}")
-
-        # Check if we're complete or hit max attempts
-        if (
-            self.checklist.is_complete()
-            and SUMMARY_SUCCESS_MESSAGE in state.validation_report
-        ):
-            slog.info("Migration complete - all items successful")
+        # Check if validation passed
+        if SUMMARY_SUCCESS_MESSAGE in state.validation_report:
+            slog.info("Migration complete - validation passed")
             return "finalize"
 
-        if state.export_attempt_counter >= get_config_int("MAX_EXPORT_ATTEMPTS"):
+        if state.validation_attempt_counter >= get_config_int(
+            "MAX_VALIDATION_ATTEMPTS"
+        ):
             slog.error(
-                f"Max attempts ({get_config_int('MAX_EXPORT_ATTEMPTS')}) of top-level export loop reached, finalizing with incomplete items."
+                f"Max validation attempts ({get_config_int('MAX_VALIDATION_ATTEMPTS')}) reached, finalizing with validation issues"
             )
             return "finalize"
 
-        incomplete_count = stats["pending"] + stats["missing"] + stats["error"]
         slog.info(
-            f"Retrying execution for {incomplete_count} incomplete items and validation report: {state.validation_report}"
+            f"Retrying validation phase. Current report: {state.validation_report}"
         )
-
-        return "execute_migration"
+        return "validate_migration"
 
     def _finalize(self, state: ChefState) -> ChefState:
         """Finalize migration and report results"""
@@ -535,12 +538,13 @@ class ChefToAnsibleSubagent:
             f"  Pending: {stats['pending']}",
             f"  Missing: {stats['missing']}",
             f"  Errors: {stats['error']}",
-            f"  Attempts: {state.export_attempt_counter}",
+            f"  Write attempts: {state.write_attempt_counter}",
+            f"  Validation attempts: {state.validation_attempt_counter}",
             "",
             "Final Validation Report:",
             state.validation_report,
             "",
-            "Final check list:",
+            "Final checklist:",
             self.checklist.to_markdown(),
         ]
 
@@ -570,7 +574,8 @@ class ChefToAnsibleSubagent:
             high_level_migration_plan=high_level_migration_plan,
             directory_listing=directory_listing,
             current_phase=MigrationPhase.INITIALIZING,
-            export_attempt_counter=0,
+            write_attempt_counter=0,
+            validation_attempt_counter=0,
             validation_report="",
             last_output="",
         )
