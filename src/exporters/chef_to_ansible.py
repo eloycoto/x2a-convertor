@@ -10,7 +10,6 @@ from langchain_core.messages.tool import ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import create_react_agent
 
-from src.types import DocumentFile
 from src.exporters.state import ChefState
 from src.exporters.types import MigrationCategory
 from src.model import (
@@ -24,6 +23,7 @@ from src.types import (
     AnsibleModule,
     Checklist,
     ChecklistStatus,
+    DocumentFile,
 )
 from src.utils.config import get_config_int
 from src.utils.logging import get_logger
@@ -106,11 +106,11 @@ class ChefToAnsibleSubagent:
         ],
     }
 
-    def __init__(self, model=None, module: Optional[str] = None) -> None:
+    def __init__(self, model=None, module: Optional[AnsibleModule] = None) -> None:
         self.model = model or get_model()
         if module is None:
             raise ValueError("module parameter is required")
-        self.module = AnsibleModule(module)
+        self.module = module
         self.checklist: Checklist = Checklist(str(self.module), MigrationCategory)
 
         # NEW: Initialize validators for new architecture
@@ -316,6 +316,7 @@ class ChefToAnsibleSubagent:
         return result.success, result.message
 
     def _validate_migration(self, state: ChefState) -> ChefState:
+
         """Phase 3: Validate and fix issues in batch mode.
 
         Uses the new service-based validation architecture with clean separation of concerns.
@@ -350,22 +351,18 @@ class ChefToAnsibleSubagent:
         # Create validation agent to fix errors
         validation_agent = self._create_validation_agent()
 
-        validation_system = get_prompt("export_ansible_validation_system")
-        validation_task = get_prompt("export_ansible_validation_task").format(
+        # Use new validation prompt with few-shot examples
+        # The v2 prompt is self-contained with instructions and examples
+        validation_task = get_prompt("export_ansible_validation_task_v2").format(
             module=state.module,
             chef_path=state.path,
             ansible_path=ansible_path,
-            high_level_migration_plan=state.high_level_migration_plan.to_document(),
-            migration_plan=state.module_migration_plan.to_document(),
-            checklist=checklist_md,
             error_report=error_report,
-            fragment_yaml_hints=get_prompt("fragment_yaml_hints"),
         )
 
         result = validation_agent.invoke(
             {
                 "messages": [
-                    {"role": "system", "content": validation_system},
                     {"role": "user", "content": validation_task},
                 ]
             },

@@ -13,7 +13,7 @@ import pytest
 
 from src.exporters.chef_to_ansible import ChefToAnsibleSubagent, MigrationPhase
 from src.exporters.state import ChefState
-from src.types import DocumentFile
+from src.types import AnsibleModule, DocumentFile
 from src.validation.service import ValidationService
 from src.validation.validators import AnsibleLintValidator, RoleStructureValidator
 from tools.ansible_lint import ANSIBLE_LINT_TOOL_SUCCESS_MESSAGE
@@ -125,7 +125,7 @@ class TestValidationIntegration:
         monkeypatch.setenv("USE_NEW_VALIDATION", "true")
 
         # Create agent
-        agent = ChefToAnsibleSubagent(module="test_module")
+        agent = ChefToAnsibleSubagent(module=AnsibleModule("test_module"))
 
         # Verify validators are initialized
         assert hasattr(agent, "validators")
@@ -141,7 +141,7 @@ class TestValidationIntegration:
         monkeypatch.delenv("USE_NEW_VALIDATION", raising=False)
 
         # Create agent
-        agent = ChefToAnsibleSubagent(module="test_module")
+        agent = ChefToAnsibleSubagent(module=AnsibleModule("test_module"))
 
         # Verify validators are still initialized (for future migration)
         assert hasattr(agent, "validators")
@@ -152,7 +152,7 @@ class TestValidationIntegration:
 
     def test_backward_compatibility_of_validator_methods(self, tmp_path):
         """Test that validator methods maintain backward compatibility."""
-        agent = ChefToAnsibleSubagent(module="test_module")
+        agent = ChefToAnsibleSubagent(module=AnsibleModule("test_module"))
 
         state = Mock(spec=ChefState)
         state.get_ansible_path.return_value = str(tmp_path / "ansible" / "test_module")

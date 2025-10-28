@@ -70,8 +70,21 @@ CRITICAL - When fixing "handler not found" errors:
 1. ADD the handler to handlers/main.yml
 2. NEVER remove the notify statement from tasks
 
+CRITICAL - PREVENT REGRESSIONS:
+1. BEFORE modifying a file, READ IT FIRST to understand what's already working
+2. If a file has a loop (loop: or with_items:), DO NOT REMOVE IT unless the error specifically says to
+3. If fixing ansible-lint errors (like [no-changed-when]), ADD fixes WITHOUT changing logic
+4. NEVER simplify or reduce functionality to fix lint errors
+5. Fix syntax/lint issues while PRESERVING all loops, variables, and logic
+
+Examples of WRONG fixes (regressions):
+- Removing a loop to fix a lint error → WRONG, add changed_when instead
+- Replacing dynamic variables with hardcoded values → WRONG, keep the variables
+- Simplifying multi-item tasks to single-item → WRONG, keep the iteration
+
 The goal is to maintain 100% functional equivalence with source code.
 Work systematically through all errors. Focus on fixing, not just reporting.
+DO NOT introduce regressions by removing working functionality.
 
 When done, provide a summary:
 - What errors were found
