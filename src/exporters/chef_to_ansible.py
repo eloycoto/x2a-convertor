@@ -1,8 +1,6 @@
-from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Literal, Optional
-import os
 
 from langchain_community.tools.file_management.file_search import FileSearchTool
 from langchain_community.tools.file_management.list_dir import ListDirectoryTool
@@ -12,7 +10,9 @@ from langchain_core.messages.tool import ToolMessage
 from langgraph.graph import StateGraph, START, END
 from langgraph.prebuilt import create_react_agent
 
-
+from src.types import DocumentFile
+from src.exporters.state import ChefState
+from src.exporters.types import MigrationCategory
 from src.model import (
     get_model,
     get_last_ai_message,
@@ -21,19 +21,19 @@ from src.model import (
 )
 from src.types import (
     SUMMARY_SUCCESS_MESSAGE,
-    DocumentFile,
     Checklist,
     ChecklistStatus,
 )
-from src.exporters.types import MigrationCategory
-from prompts.get_prompt import get_prompt
 from src.utils.config import get_config_int
-from tools.ansible_write import AnsibleWriteTool
+from src.utils.logging import get_logger
+from src.validation.service import ValidationService
+from src.validation.validators import AnsibleLintValidator, RoleStructureValidator
+from prompts.get_prompt import get_prompt
 from tools.ansible_lint import ANSIBLE_LINT_TOOL_SUCCESS_MESSAGE, AnsibleLintTool
 from tools.ansible_role_check import AnsibleRoleCheckTool
+from tools.ansible_write import AnsibleWriteTool
 from tools.copy_file import CopyFileWithMkdirTool
 from tools.diff_file import DiffFileTool
-from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -58,8 +58,6 @@ def sanitize_module_name(module_name: str) -> str:
 
 
 # Constants
-ANSIBLE_PATH_TEMPLATE = "./ansible/{module}"
-CHECKLIST_FILENAME = ".checklist.json"
 PROCESSABLE_STATUSES = {
     ChecklistStatus.PENDING,
     ChecklistStatus.MISSING,
@@ -85,29 +83,6 @@ class AgentType(str, Enum):
     PLANNING = "planning"
     WRITE = "write"
     VALIDATION = "validation"
-
-
-@dataclass
-class ChefState:
-    path: str
-    module: str
-    user_message: str
-    module_migration_plan: DocumentFile
-    high_level_migration_plan: DocumentFile
-    directory_listing: list[str]
-    current_phase: str
-    write_attempt_counter: int
-    validation_attempt_counter: int
-    validation_report: str
-    last_output: str
-
-    def get_ansible_path(self) -> str:
-        """Get the Ansible output path for this module"""
-        return ANSIBLE_PATH_TEMPLATE.format(module=self.module)
-
-    def get_checklist_path(self) -> Path:
-        """Get the path to the checklist JSON file"""
-        return Path(self.get_ansible_path()) / CHECKLIST_FILENAME
 
 
 class ChefToAnsibleSubagent:
@@ -155,6 +130,14 @@ class ChefToAnsibleSubagent:
             raise ValueError("module parameter is required")
         self.module = sanitize_module_name(module)
         self.checklist: Checklist = Checklist(self.module, MigrationCategory)
+
+        # NEW: Initialize validators for new architecture
+        self.validators = [
+            AnsibleLintValidator(),
+            RoleStructureValidator(),
+        ]
+        self.validation_service = ValidationService(self.validators)
+
         self._workflow = self._create_workflow()
         logger.debug(self._workflow.get_graph().draw_mermaid())
 
@@ -313,44 +296,48 @@ class ChefToAnsibleSubagent:
         return state
 
     def _validate_role_check(self, state: ChefState) -> tuple[bool, str]:
-        """Structural validation"""
+        """Structural validation (delegates to new validator)"""
         slog = logger.bind(phase="validate_migration_role_check")
         ansible_path = state.get_ansible_path()
-        role_check_tool = AnsibleRoleCheckTool()
         slog.info(f"Running ansible_role_check on {ansible_path}")
 
-        try:
-            role_check_result = role_check_tool.run(ansible_path)
-        except Exception as e:
-            role_check_result = f"Error: {str(e)}"
-        slog.debug(f"Role check result: {role_check_result}")
+        # Delegate to new validator
+        validator = self.validators[1]  # RoleStructureValidator
+        result = validator.validate(ansible_path)
 
-        if "Validation failed" in role_check_result or "Error:" in role_check_result:
-            slog.warning(f"Role validation has issues: {role_check_result}")
-            return False, role_check_result
+        # Log appropriate message
+        if result.success:
+            if "warning" in result.message.lower():
+                slog.info(
+                    "Role validation passed with warnings (check-mode limitations)"
+                )
+            else:
+                slog.info("Role validation passed")
+        else:
+            slog.warning(f"Role validation has issues: {result.message}")
 
-        if "passed with warnings" in role_check_result:
-            slog.info("Role validation passed with warnings (check-mode limitations)")
-            return True, role_check_result
-
-        slog.info("Role validation passed")
-        return True, ROLE_VALIDATION_SUCCESS_MESSAGE
+        # Convert to tuple for backward compatibility
+        return result.success, result.message
 
     def _validate_ansible_lint(self, state: ChefState) -> tuple[bool, str]:
-        """Run ansible_lint on every MigrationCategory.RECIPES and MigrationCategory.STRUCTURE"""
+        """Run ansible_lint (delegates to new validator)"""
         slog = logger.bind(phase="validate_migration_ansible_lint")
         slog.info("Validating ansible_lint")
 
         ansible_path = state.get_ansible_path()
-        ansible_lint_tool = AnsibleLintTool()
-        print(f"## Running lintin {ansible_path}")
-        result = ansible_lint_tool._run(ansible_path)
-        print(f"## result")
 
-        return result == ANSIBLE_LINT_TOOL_SUCCESS_MESSAGE, result
+        # Delegate to new validator
+        validator = self.validators[0]  # AnsibleLintValidator
+        result = validator.validate(ansible_path)
+
+        # Convert to tuple for backward compatibility
+        return result.success, result.message
 
     def _validate_migration(self, state: ChefState) -> ChefState:
-        """Phase 3: Validate and fix issues in batch mode"""
+        """Phase 3: Validate and fix issues in batch mode.
+
+        Uses the new service-based validation architecture with clean separation of concerns.
+        """
         slog = logger.bind(
             phase="validate_migration", attempt=state.validation_attempt_counter
         )
@@ -361,31 +348,21 @@ class ChefToAnsibleSubagent:
         ansible_path = state.get_ansible_path()
         checklist_md = self.checklist.to_markdown()
 
-        # Run ansible_lint for best practices validation
-        success_ansible_lint, result_ansible_lint = self._validate_ansible_lint(state)
+        # Simple, clean validation using service
+        results = self.validation_service.validate_all(ansible_path)
 
-        # Run ansible_role_check for structural validation
-        success_role_check, result_role_check = self._validate_role_check(state)
-
-        # Check if both validations pass
-        if success_role_check and success_ansible_lint:
+        # Check if all validations pass
+        if not self.validation_service.has_errors(results):
             slog.info("All validations passed")
-            state.validation_report = f"{SUMMARY_SUCCESS_MESSAGE}\n\nRole Check: {result_role_check}\nAnsible Lint: {result_ansible_lint}"
+            state.validation_report = (
+                f"{SUMMARY_SUCCESS_MESSAGE}\n\n"
+                + self.validation_service.get_success_message(results)
+            )
             state.validation_attempt_counter += 1
             return state
 
-        # Collect all errors for batch fixing
-        error_report_parts = []
-        if not success_role_check:
-            error_report_parts.append(
-                f"## Role Structure Errors\n```\n{result_role_check}\n```"
-            )
-        if not success_ansible_lint:
-            error_report_parts.append(
-                f"## Ansible Lint Errors\n```\n{result_ansible_lint}\n```"
-            )
-
-        error_report = "\n\n".join(error_report_parts)
+        # Format errors for agent
+        error_report = self.validation_service.format_error_report(results)
         slog.warning(f"Validation errors found:\n{error_report}")
 
         # Create validation agent to fix errors
@@ -402,7 +379,7 @@ class ChefToAnsibleSubagent:
             error_report=error_report,
             fragment_yaml_hints=get_prompt("fragment_yaml_hints"),
         )
-        __import__('ipdb').set_trace()
+
         result = validation_agent.invoke(
             {
                 "messages": [
