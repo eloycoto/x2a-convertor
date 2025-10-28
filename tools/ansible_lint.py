@@ -38,6 +38,31 @@ class AnsibleLintTool(BaseTool):
     )
     args_schema: dict[str, Any] | type[BaseModel] | None = AnsibleLintInput
 
+    def _format_lint_issues(self, matches: list, prefix: str = "") -> str:
+        """Format ansible-lint matches into a human-readable string.
+
+        Args:
+            matches: List of ansible-lint match objects
+            prefix: Optional prefix message to add before the issue list
+
+        Returns:
+            Formatted string with all issues listed
+        """
+        issues: list[str] = []
+        for match in matches:
+            issue = (
+                f"{match.filename}:{match.lineno or 0} "
+                f"[{match.rule.id}] {match.message}"
+            )
+            issues.append(issue)
+
+        if prefix:
+            result = f"{prefix}\n"
+        else:
+            result = f"Found {len(matches)} ansible-lint issue(s):\n"
+        result += "\n".join(issues)
+        return result
+
     # pyrefly: ignore
     def _run(self, ansible_path: str) -> str:
         """Lint Ansible files and report issues."""
@@ -74,6 +99,7 @@ class AnsibleLintTool(BaseTool):
                     offline=True,  # Prevent external dependencies and ansible-config dump
                     lintables=["."],  # Use current directory since we changed to it
                     _skip_ansible_syntax_check=True,  # Skip ansible-playbook --syntax-check
+                    skip_list=["yaml[line-length]"],  # Skip line length checks for auto-generated code
                 )
 
                 # all available rules
@@ -85,6 +111,21 @@ class AnsibleLintTool(BaseTool):
                 if not lintResult.matches:
                     logger.info(f"No AnsibleLintTool issues found for '{ansible_path}'")
                     return ANSIBLE_LINT_TOOL_SUCCESS_MESSAGE
+
+                # Check for syntax errors (load-failure, syntax-check) that prevent fixing
+                syntax_errors = [
+                    match for match in lintResult.matches
+                    if match.rule.id in ['load-failure', 'syntax-check', 'parser-error']
+                ]
+
+                ## If syntax_errors the autofix is not going to work, and the LLM get into a loop that does not know where it fails.
+                if syntax_errors:
+                    logger.warning(
+                        f"Found {len(syntax_errors)} syntax error(s) that prevent auto-fixing"
+                    )
+                    # Format all issues with filename and line (including syntax errors)
+                    prefix = f"Found {len(lintResult.matches)} ansible-lint issue(s) (including {len(syntax_errors)} syntax error(s)):"
+                    return self._format_lint_issues(lintResult.matches, prefix=prefix)
 
                 logger.debug(
                     f"AnsibleLintTool found {len(lintResult.matches)} matches, trying to fix them"
@@ -107,16 +148,7 @@ class AnsibleLintTool(BaseTool):
                 )
 
                 # Format issues after fixes
-                issues: list[str] = []
-                for match in lintResult.matches:
-                    issue = (
-                        f"{match.filename}:{match.lineno or 0} "
-                        f"[{match.rule.id}] {match.message}"
-                    )
-                    issues.append(issue)
-
-                result = f"Found {len(lintResult.matches)} ansible-lint issue(s):\n"
-                result += "\n".join(issues)
+                result = self._format_lint_issues(lintResult.matches)
                 logger.debug(
                     f"AnsibleLintTool found {len(lintResult.matches)} ansible-lint issue(s) for {ansible_path}: {result}"
                 )

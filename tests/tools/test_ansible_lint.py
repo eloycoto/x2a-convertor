@@ -150,3 +150,39 @@ class TestAnsibleLintTool:
         # Should either fix all issues or report remaining issues
         assert isinstance(result, str)
         assert len(result) > 0
+
+    def test_syntax_error_reports_filename_and_line(self) -> None:
+        """Test that YAML syntax errors report the filename and line number."""
+        # Create a subdirectory with a role structure
+        subdir = os.path.join(self.temp_dir, "test_role")
+        tasks_dir = os.path.join(subdir, "tasks")
+        os.makedirs(tasks_dir)
+
+        # Create a task file with YAML syntax error (invalid Jinja2 expression)
+        # This mimics the real-world error: mapping values not allowed
+        yaml_with_syntax_error = """---
+- name: Check firewall status
+  ansible.builtin.command: ufw status
+  register: fw_status
+  changed_when: false
+
+- name: Set default deny
+  ansible.builtin.command: ufw default deny
+  when: fw_status is not search("Default: deny")
+"""
+        file_path = os.path.join(tasks_dir, "security.yml")
+        with open(file_path, "w") as f:
+            f.write(yaml_with_syntax_error)
+
+        result = self.tool._run(subdir)
+
+        # Verify the result contains the error information
+        assert isinstance(result, str)
+        assert "load-failure" in result or "syntax" in result.lower()
+
+        # Most importantly: verify it includes the filename, not "<unicode string>"
+        assert "security.yml" in result
+        assert "<unicode string>" not in result
+
+        # Should also contain line number information
+        assert "tasks/security.yml:" in result
