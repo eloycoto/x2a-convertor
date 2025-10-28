@@ -7,7 +7,7 @@ through its various phases.
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.types import DocumentFile
+from src.types import AnsibleModule, DocumentFile
 
 
 # Constants
@@ -27,7 +27,7 @@ class ChefState:
 
     Attributes:
         path: Path to the Chef cookbook/module
-        module: Name of the module being migrated
+        module: AnsibleModule value object representing the module being migrated
         user_message: Original user message/requirements
         module_migration_plan: Detailed migration plan document
         high_level_migration_plan: High-level migration strategy document
@@ -40,7 +40,7 @@ class ChefState:
     """
 
     path: str
-    module: str
+    module: AnsibleModule
     user_message: str
     module_migration_plan: DocumentFile
     high_level_migration_plan: DocumentFile
@@ -57,7 +57,7 @@ class ChefState:
         Returns:
             Path string in format ./ansible/{module}
         """
-        return ANSIBLE_PATH_TEMPLATE.format(module=self.module)
+        return ANSIBLE_PATH_TEMPLATE.format(module=str(self.module))
 
     def get_checklist_path(self) -> Path:
         """Get the path to the checklist JSON file.
