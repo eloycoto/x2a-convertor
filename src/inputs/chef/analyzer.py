@@ -6,7 +6,7 @@ clean SOLID/DDD architecture internally.
 """
 
 from dataclasses import dataclass
-
+from pathlib import Path
 from langchain_community.tools.file_management.file_search import FileSearchTool
 from langchain_community.tools.file_management.list_dir import ListDirectoryTool
 from langchain_community.tools.file_management.read import ReadFileTool
@@ -20,6 +20,7 @@ from src.model import get_last_ai_message, get_model, get_runnable_config
 from src.utils.logging import get_logger
 
 from .dependency_fetcher import ChefDependencyManager
+from .execution_tree_builder import ExecutionTreeBuilder
 from .models import (
     AttributesAnalysisResult,
     ProviderAnalysisResult,
@@ -205,7 +206,7 @@ class ChefSubagent:
         slog = logger.bind(phase="analyze_structure")
         slog.info("Starting structured analysis of cookbook files")
 
-        all_paths = [state.path, *state.dependency_paths]
+        all_paths = [Path(x) for x in [state.path, *state.dependency_paths]]
         recipes: list[RecipeAnalysisResult] = []
         providers: list[ProviderAnalysisResult] = []
         attributes: list[AttributesAnalysisResult] = []
@@ -214,10 +215,7 @@ class ChefSubagent:
         slog.info("Step 1: Analyzing attributes to build iteration map")
         attribute_collections = {}  # Map of collection names to their keys
 
-        for path_str in all_paths:
-            from pathlib import Path
-
-            path = Path(path_str)
+        for path in all_paths:
             if not path.exists():
                 continue
 
@@ -244,13 +242,25 @@ class ChefSubagent:
                                 # Check if all values are dicts (collection pattern)
                                 # e.g., sites: {site1: {...}, site2: {...}}
                                 all_dict_values = all(isinstance(v, dict) for v in value.values())
+                                slog.debug(f"Checking '{current_path}': all_dict_values={all_dict_values}, keys={list(value.keys())[:5]}")
 
                                 if all_dict_values:
-                                    # This looks like a collection of items
-                                    attribute_collections[current_path] = list(value.keys())
-                                    slog.info(f"Found collection '{current_path}' with {len(value)} items: {list(value.keys())}")
+                                    # Check if this is a deep collection by recursing first
+                                    # This ensures we find nginx.sites instead of nginx
+                                    collections_before = len(attribute_collections)
+                                    slog.debug(f"Recursing into '{current_path}' (collections_before={collections_before})")
+                                    find_collections(value, current_path)
+                                    collections_added = len(attribute_collections) - collections_before
+                                    slog.debug(f"After recursing '{current_path}': collections_added={collections_added}")
+
+                                    # Only mark as collection if no deeper collections were found
+                                    if collections_added == 0:
+                                        # This is a leaf collection
+                                        attribute_collections[current_path] = list(value.keys())
+                                        slog.info(f"✓ Found LEAF collection '{current_path}' with {len(value)} items: {list(value.keys())}")
                                 else:
                                     # This is just a namespace, recurse deeper
+                                    slog.debug(f"Namespace '{current_path}', recursing")
                                     find_collections(value, current_path)
 
                     find_collections(analysis.attributes)
@@ -263,10 +273,7 @@ class ChefSubagent:
         slog.info("Step 2: Analyzing recipes and providers")
 
         # Scan all paths for Chef files
-        for path_str in all_paths:
-            from pathlib import Path
-
-            path = Path(path_str)
+        for path in all_paths:
             if not path.exists():
                 slog.warning(f"Path does not exist: {path_str}")
                 continue
@@ -301,11 +308,11 @@ class ChefSubagent:
 
         # Create structured analysis aggregate
         state.structured_analysis = StructuredAnalysis(
-            recipes=recipes, providers=providers, attributes=attributes
+            recipes=recipes,
+            providers=providers,
+            attributes=attributes,
+            attribute_collections=attribute_collections,
         )
-
-        # Store attribute collections for later use in formatting
-        state.structured_analysis.attribute_collections = attribute_collections  # type: ignore
 
         slog.info(
             f"✓ Analyzed {len(recipes)} recipes, {len(providers)} providers, "
@@ -386,8 +393,10 @@ class ChefSubagent:
             slog.warning("No structured analysis available, skipping validation")
             return state
 
-        # Prepare structured analysis summary
-        analysis_summary = self._format_analysis_summary(state.structured_analysis)
+        # Prepare execution tree summary for validation
+        analysis_summary = self._build_execution_tree_summary(
+            state.structured_analysis, state.path, state.dependency_paths
+        )
 
         # Create validation prompt
         system_message = get_prompt("chef_analysis_validation_system")
@@ -424,27 +433,70 @@ class ChefSubagent:
 
         return state
 
-    def _format_analysis_summary(self, analysis: StructuredAnalysis) -> str:
-        """Format structured analysis into detailed summary with templates, providers, and resources."""
+    def _build_execution_tree_summary(
+        self, analysis: StructuredAnalysis, cookbook_path: str, dependency_paths: list[str]
+    ) -> str:
+        """Build and format the execution tree showing complete recipe flow."""
+        lines = []
+
+        lines.append("=" * 80)
+        lines.append("CHEF RECIPE EXECUTION TREE")
+        lines.append("=" * 80)
+        lines.append("")
+        lines.append(f"Total files analyzed: {analysis.get_total_files_analyzed()}")
+        lines.append("")
+
+        # Find the entry recipe (usually default.rb in the main cookbook)
+        entry_recipe = None
+        for recipe_result in analysis.recipes:
+            if "default.rb" in recipe_result.file_path and cookbook_path in recipe_result.file_path:
+                entry_recipe = recipe_result.file_path
+                break
+
+        if not entry_recipe and analysis.recipes:
+            # Fallback to first recipe if no default.rb found
+            entry_recipe = analysis.recipes[0].file_path
+
+        if entry_recipe:
+            # Build execution tree
+            tree_builder = ExecutionTreeBuilder(
+                structured_analysis=analysis,
+                path_resolver=self._path_resolver,
+                dependency_paths=dependency_paths,
+            )
+
+            tree_root = tree_builder.build_tree(entry_recipe)
+            tree_formatted = tree_builder.format_tree(tree_root)
+
+            lines.append("Execution flow starting from entry recipe:")
+            lines.append("")
+            lines.append(tree_formatted)
+        else:
+            lines.append("No entry recipe found (expected default.rb)")
+
+        lines.append("")
+        lines.append("=" * 80)
+        lines.append("")
+
+        # Still show iteration collections summary at the bottom
+        if analysis.attribute_collections:
+            lines.append("ITERATION COLLECTIONS DETECTED:")
+            lines.append("")
+            for collection_name, items in analysis.attribute_collections.items():
+                lines.append(f"  {collection_name}: {len(items)} items")
+                lines.append(f"    → {', '.join(items)}")
+            lines.append("")
+            lines.append("=" * 80)
+            lines.append("")
+
+        return "\n".join(lines)
+
+    def _format_analysis_summary_OLD(self, analysis: StructuredAnalysis) -> str:
+        """OLD FORMAT - kept for reference, use _build_execution_tree_summary instead."""
         lines = []
 
         lines.append(f"Total files analyzed: {analysis.get_total_files_analyzed()}")
         lines.append("")
-
-        # CRITICAL: Show iteration tree at the TOP
-        iteration_tree = self._build_iteration_tree(analysis)
-        if iteration_tree:
-            lines.append("=" * 80)
-            lines.append("ITERATION TREE - ALL ITEMS EXPANDED")
-            lines.append("=" * 80)
-            lines.append("")
-            lines.append("The cookbook iterates over the following collections.")
-            lines.append("ALL items are listed below - use these exact names in your migration plan:")
-            lines.append("")
-            lines.extend(iteration_tree)
-            lines.append("")
-            lines.append("=" * 80)
-            lines.append("")
 
         # Recipe analysis with detailed execution items
         if analysis.recipes:
@@ -721,14 +773,14 @@ class ChefSubagent:
             slog.warning(f"Failed to generate tree-sitter report: {e}")
             tree_sitter_report = "Tree-sitter analysis not available"
 
-        # Add structured analysis summary if available
-        structured_analysis_summary = ""
+        # Build execution tree if available
+        execution_tree_summary = ""
         if state.structured_analysis:
-            structured_analysis_summary = self._format_analysis_summary(
-                state.structured_analysis
+            execution_tree_summary = self._build_execution_tree_summary(
+                state.structured_analysis, state.path, state.dependency_paths
             )
             slog.info(
-                f"Including structured analysis of {state.structured_analysis.get_total_files_analyzed()} files"
+                f"Built execution tree from {state.structured_analysis.get_total_files_analyzed()} analyzed files"
             )
         else:
             slog.warning("No structured analysis available")
@@ -740,8 +792,13 @@ class ChefSubagent:
             user_message=state.user_message,
             directory_listing=data_list,
             tree_sitter_report=tree_sitter_report,
-            structured_analysis=structured_analysis_summary,
+            execution_tree=execution_tree_summary,
         )
+
+        # DEBUG: Save execution tree for inspection
+        with open("debug_execution_tree.txt", "w") as f:
+            f.write(execution_tree_summary)
+        slog.debug("Saved execution tree to debug_execution_tree.txt")
 
         # Execute chef agent with both system and user messages
         result = self.agent.invoke(

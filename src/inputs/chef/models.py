@@ -166,6 +166,26 @@ class StructuredAnalysis(BaseModel):
 
 
 # ============================================================================
+# Execution Tree Models (for visual tree display)
+# ============================================================================
+
+
+class ExecutionNode(BaseModel):
+    """Node in the execution tree showing recipe flow and resources."""
+
+    node_type: str  # "recipe" | "resource" | "loop" | "custom_resource" | "loop_item"
+    name: str
+    file_path: str | None = None
+    children: list["ExecutionNode"] = Field(default_factory=list)
+    attributes: dict[str, Any] = Field(
+        default_factory=dict
+    )  # For loop items (e.g., site config)
+    details: str | None = None  # Additional info like template source, action, etc.
+    resource_type: str | None = None  # For resources: "package", "service", "template"
+    provider_path: str | None = None  # For custom resources
+
+
+# ============================================================================
 # Aggregate Root
 # ============================================================================
 

@@ -197,10 +197,62 @@ Expected JSON:
 }}
 ```
 
+Example 4 - Iteration with .each loop:
+```ruby
+node['nginx']['sites'].each do |site_name, config|
+  template "/etc/nginx/sites-available/#{{site_name}}" do
+    source 'site.conf.erb'
+    variables(
+      server_name: site_name,
+      document_root: config['document_root']
+    )
+  end
+
+  link "/etc/nginx/sites-enabled/#{{site_name}}" do
+    to "/etc/nginx/sites-available/#{{site_name}}"
+  end
+end
+```
+
+Expected JSON:
+```json
+{{
+  "execution_order": [
+    {{
+      "seq": 1,
+      "type": "conditional",
+      "condition": "node['nginx']['sites'].each do |site_name, config|",
+      "execution_order": [
+        {{
+          "seq": 1,
+          "type": "resource",
+          "resource_type": "template",
+          "name": "/etc/nginx/sites-available/#{{site_name}}",
+          "attributes": {{
+            "source": "site.conf.erb",
+            "variables": "server_name: site_name, document_root: config['document_root']"
+          }}
+        }},
+        {{
+          "seq": 2,
+          "type": "resource",
+          "resource_type": "link",
+          "name": "/etc/nginx/sites-enabled/#{{site_name}}",
+          "attributes": {{
+            "to": "/etc/nginx/sites-available/#{{site_name}}"
+          }}
+        }}
+      ]
+    }}
+  ]
+}}
+```
+
 CRITICAL REQUIREMENTS:
 - Sequence numbers start at 1 and increment
 - Preserve Ruby interpolations like "#{{var}}" as-is
-- Conditionals have their own nested execution_order
+- Conditionals have their own nested execution_order (if/unless/case blocks)
+- **.each loops MUST be treated as "conditional" type** with the full loop declaration as the condition
 - Each operation must have a "type" field
 - Return ONLY valid JSON, no explanations
 
