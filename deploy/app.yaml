@@ -49,7 +49,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: x2a-sa
-    namespace: x2ansible
+    namespace: eloyansible
 roleRef:
   kind: ClusterRole
   name: x2a-cluster-role
@@ -69,9 +69,17 @@ data:
     includes:
       - dynamic-plugins.default.yaml
     plugins:
+      # X2A Plugins
       - package: "oci://quay.io/x2ansible/red-hat-developer-hub-backstage-plugin-x2a:1.0.1!red-hat-developer-hub-backstage-plugin-x2a"
       - package: "oci://quay.io/x2ansible/red-hat-developer-hub-backstage-plugin-scaffolder-backend-module-x2a:0.1.1!red-hat-developer-hub-backstage-plugin-scaffolder-backend-module-x2a"
       - package: "oci://quay.io/x2ansible/red-hat-developer-hub-backstage-plugin-x2a-backend:1.0.1!red-hat-developer-hub-backstage-plugin-x2a-backend"
+      # MCP Plugins (requires RHDH 1.8+)
+      - package: "oci://ghcr.io/redhat-developer/rhdh-plugin-export-overlays/backstage-plugin-mcp-actions-backend:bs_1.45.3__0.1.5!backstage-plugin-mcp-actions-backend"
+        disabled: false
+      - package: "oci://ghcr.io/redhat-developer/rhdh-plugin-export-overlays/red-hat-developer-hub-backstage-plugin-software-catalog-mcp-tool:bs_1.42.5__0.2.3!red-hat-developer-hub-backstage-plugin-software-catalog-mcp-tool"
+        disabled: false
+      - package: "oci://ghcr.io/redhat-developer/rhdh-plugin-export-overlays/red-hat-developer-hub-backstage-plugin-techdocs-mcp-tool:bs_1.42.5__0.3.0!red-hat-developer-hub-backstage-plugin-techdocs-mcp-tool"
+        disabled: false
 ---
 # ConfigMap: Application Configuration
 kind: ConfigMap
@@ -82,11 +90,27 @@ data:
   app-config-rhdh.yaml: |
 
     backend:
+      cors:
+        origin:
+          - http://localhost:6274
+        credentials: true
+      actions:
+        pluginSources:
+          - 'catalog'
+          - 'x2a'
+          - 'software-catalog-mcp-tool'
+          - 'techdocs-mcp-tool'
       reading:
         allow:
           - host: raw.githubusercontent.com
+      auth:
+        dangerouslyDisableDefaultAuthPolicy: true
 
     auth:
+      experimentalDynamicClientRegistration:
+        # enable the feature
+        enabled: true
+
       # see https://backstage.io/docs/auth/ to learn about auth providers
       environment: development
       providers:
