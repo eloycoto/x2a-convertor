@@ -255,22 +255,6 @@ class PuppetSubagent:
                 )
                 manifests.extend(context_manifests)
 
-            if state.dependencies_dir:
-                deps_path = Path(state.dependencies_dir)
-                if deps_path.is_dir():
-                    dep_modules = [
-                        d
-                        for d in sorted(deps_path.iterdir())
-                        if d.is_dir() and (d / "manifests").is_dir()
-                    ]
-                    if dep_modules:
-                        slog.info(
-                            f"Step 1c: Analyzing {len(dep_modules)} dependency modules"
-                        )
-                        for dep_module in dep_modules:
-                            dep_manifests = self._analyze_manifests(dep_module, slog)
-                            manifests.extend(dep_manifests)
-
             slog.info("Step 2: Analyzing Hiera data files")
             hiera_data = self._analyze_hiera_data(module_path, slog)
 
@@ -300,28 +284,50 @@ class PuppetSubagent:
                 templates=templates,
                 custom_types=custom_types,
             )
-
             slog.info(
-                f"Analyzed {len(manifests)} manifests, {len(hiera_data)} Hiera files, "
+                f"Initial analysis: {len(manifests)} manifests, {len(hiera_data)} Hiera files, "
                 f"{len(templates)} templates, {len(custom_types)} custom components"
             )
 
             slog.info("Step 5: Detecting credentials")
             credentials_analysis = self._detect_credentials(hiera_data, manifests, slog)
 
-            slog.info("Step 6: Building execution tree")
+            slog.info(
+                "Step 6: Building execution tree with recursive dependency resolution"
+            )
+            from src.inputs.puppet.recursive_analyzer import RecursiveManifestAnalyzer
+
+            recursive_analyzer = RecursiveManifestAnalyzer(
+                manifest_service=self._manifest_service,
+                path_resolver=self._path_resolver,
+                initial_manifests=manifests,
+            )
+            __import__('ipdb').set_trace()
+
             tree_builder = PuppetExecutionTreeBuilder(
-                structured_analysis, path_resolver=self._path_resolver
+                structured_analysis,
+                path_resolver=self._path_resolver,
+                recursive_analyzer=recursive_analyzer,
             )
             entry_class = state.role_class if state.role_class else None
             tree_root = tree_builder.build_tree(entry_class=entry_class)
+
+            all_manifests = recursive_analyzer.get_all_manifests()
+            discovered_count = len(all_manifests) - len(manifests)
+            if discovered_count > 0:
+                slog.info(
+                    f"Discovered {discovered_count} additional manifests through recursive analysis"
+                )
+                structured_analysis = structured_analysis.model_copy(
+                    update={"manifests": all_manifests}
+                )
 
             execution_tree_summary = self._format_execution_tree(
                 tree_builder, tree_root, structured_analysis
             )
 
             if metrics:
-                metrics.record_metric("manifests_analyzed", len(manifests))
+                metrics.record_metric("manifests_analyzed", len(all_manifests))
                 metrics.record_metric("hiera_files_analyzed", len(hiera_data))
                 metrics.record_metric("templates_analyzed", len(templates))
                 metrics.record_metric("custom_types_analyzed", len(custom_types))
@@ -353,6 +359,7 @@ class PuppetSubagent:
                 )
             except Exception as e:
                 slog.warning(f"Failed to analyze manifest {pp_file}: {e}")
+
         return results
 
     def _analyze_manifest_files(
@@ -374,6 +381,7 @@ class PuppetSubagent:
                 )
             except Exception as e:
                 slog.warning(f"Failed to analyze context manifest {pp_file}: {e}")
+        __import__('ipdb').set_trace()
         return results
 
     def _analyze_hiera_data(

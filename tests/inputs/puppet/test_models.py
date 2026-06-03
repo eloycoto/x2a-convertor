@@ -1,9 +1,9 @@
 """Tests for Puppet analysis domain models."""
 
 from src.inputs.puppet.models import (
-    ClassInclude,
+    ClassIncludeExecution,
     ClassInheritance,
-    ConditionalBlock,
+    ConditionalExecution,
     CredentialAnalysis,
     CredentialAnalysisResult,
     CredentialEntry,
@@ -14,31 +14,44 @@ from src.inputs.puppet.models import (
     HieraHierarchy,
     HieraLevel,
     HieraVariableMapping,
-    IterationBlock,
+    IterationExecution,
     ManifestAnalysisResult,
     ManifestExecutionAnalysis,
-    PuppetResourceDeclaration,
     PuppetStructuredAnalysis,
     PuppetTemplateAnalysis,
+    ResourceDeclaration,
     TemplateAnalysisResult,
 )
 
 
-class TestPuppetResourceDeclaration:
+class TestResourceDeclaration:
     def test_defaults(self):
-        res = PuppetResourceDeclaration(resource_type="package", title="haproxy")
+        res = ResourceDeclaration(resource_type="package", title="haproxy")
+        assert res.type == "resource"
         assert res.resource_type == "package"
         assert res.title == "haproxy"
         assert res.attributes == {}
 
     def test_with_attributes(self):
-        res = PuppetResourceDeclaration(
+        res = ResourceDeclaration(
             resource_type="file",
             title="/etc/haproxy/haproxy.cfg",
             attributes={"ensure": "file", "owner": "root", "mode": "0640"},
         )
+        assert res.type == "resource"
         assert res.attributes["ensure"] == "file"
         assert res.attributes["mode"] == "0640"
+
+    def test_format_label(self):
+        res = ResourceDeclaration(
+            resource_type="package",
+            title="nginx",
+            attributes={"ensure": "installed"},
+        )
+        label = res.format_label()
+        assert "[resource]" in label
+        assert "package" in label
+        assert "nginx" in label
 
 
 class TestManifestExecutionAnalysis:
@@ -46,13 +59,7 @@ class TestManifestExecutionAnalysis:
         analysis = ManifestExecutionAnalysis()
         assert analysis.class_name == ""
         assert analysis.class_parameters == {}
-        assert analysis.resources == []
-        assert analysis.class_includes == []
-        assert analysis.conditionals == []
-        assert analysis.iterations == []
-        assert analysis.exported_resources == []
-        assert analysis.virtual_resources == []
-        assert analysis.collectors == []
+        assert analysis.execution_order == []
         assert analysis.puppetdb_queries == []
         assert analysis.relationship_chains == []
 
@@ -60,37 +67,29 @@ class TestManifestExecutionAnalysis:
         analysis = ManifestExecutionAnalysis(
             class_name="profile_haproxy",
             class_parameters={"package_name": "String", "config_dir": "String"},
-            resources=[
-                PuppetResourceDeclaration(resource_type="package", title="haproxy"),
-            ],
-            class_includes=[
-                ClassInclude(
+            execution_order=[
+                ResourceDeclaration(resource_type="package", title="haproxy"),
+                ClassIncludeExecution(
                     class_name="profile_haproxy::config", relationship="include"
                 ),
-                ClassInclude(
+                ClassIncludeExecution(
                     class_name="profile_haproxy::service", relationship="contain"
                 ),
-            ],
-            conditionals=[
-                ConditionalBlock(
+                ConditionalExecution(
                     condition="$ssl_enabled",
                     condition_type="if",
-                    resources=[
-                        PuppetResourceDeclaration(
+                    execution_order=[
+                        ResourceDeclaration(
                             resource_type="file", title="/etc/ssl/cert.pem"
                         )
                     ],
                 ),
-            ],
-            iterations=[
-                IterationBlock(
+                IterationExecution(
                     iterator_type="each",
                     collection_variable="$backends",
                     item_variable="$name, $config",
-                    resources=[
-                        PuppetResourceDeclaration(
-                            resource_type="file", title="backend.cfg"
-                        )
+                    execution_order=[
+                        ResourceDeclaration(resource_type="file", title="backend.cfg")
                     ],
                 ),
             ],
@@ -100,14 +99,24 @@ class TestManifestExecutionAnalysis:
         )
         assert analysis.class_name == "profile_haproxy"
         assert len(analysis.class_parameters) == 2
-        assert len(analysis.resources) == 1
-        assert len(analysis.class_includes) == 2
-        assert analysis.class_includes[0].relationship == "include"
-        assert analysis.class_includes[1].relationship == "contain"
-        assert len(analysis.conditionals) == 1
-        assert analysis.conditionals[0].condition_type == "if"
-        assert len(analysis.iterations) == 1
-        assert analysis.iterations[0].iterator_type == "each"
+        assert len(analysis.execution_order) == 5
+
+        # Check types
+        assert analysis.execution_order[0].type == "resource"
+        assert analysis.execution_order[1].type == "class_include"
+        assert analysis.execution_order[2].type == "class_include"
+        assert analysis.execution_order[3].type == "conditional"
+        assert analysis.execution_order[4].type == "iteration"
+
+        # Check nested execution order
+        conditional = analysis.execution_order[3]
+        assert len(conditional.execution_order) == 1
+        assert conditional.execution_order[0].type == "resource"
+
+        iteration = analysis.execution_order[4]
+        assert len(iteration.execution_order) == 1
+        assert iteration.execution_order[0].type == "resource"
+
         assert len(analysis.relationship_chains) == 1
 
 

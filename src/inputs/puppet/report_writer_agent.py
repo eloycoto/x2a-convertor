@@ -138,17 +138,10 @@ class ReportWriterAgent(InputAgent[PuppetState]):
             analysis = manifest.analysis
             class_name = analysis.class_name or manifest.file_path
 
-            for res in analysis.exported_resources:
-                attrs = ", ".join(
-                    f"{k}: {v}" for k, v in list(res.attributes.items())[:5]
-                )
-                exported.append(
-                    f"  - `@@{res.resource_type}[{res.title}]` in {class_name}"
-                    + (f" ({attrs})" if attrs else "")
-                )
-
-            for collector in analysis.collectors:
-                collectors.append(f"  - `{collector}` in {class_name}")
+            # Extract exported resources and collectors from execution_order
+            self._extract_puppetdb_items(
+                analysis.execution_order, class_name, exported, collectors
+            )
 
             for query in analysis.puppetdb_queries:
                 queries.append(f"  - `{query}` in {class_name}")
@@ -168,6 +161,35 @@ class ReportWriterAgent(InputAgent[PuppetState]):
             lines.extend(queries)
 
         return "\n".join(lines)
+
+    def _extract_puppetdb_items(
+        self,
+        execution_order: list,
+        class_name: str,
+        exported: list[str],
+        collectors: list[str],
+    ) -> None:
+        """Recursively extract exported resources and collectors from execution order."""
+        for item in execution_order:
+            if item.type == "exported_resource":
+                attrs = ", ".join(
+                    f"{k}: {v}" for k, v in list(item.attributes.items())[:5]
+                )
+                exported.append(
+                    f"  - `@@{item.resource_type}[{item.title}]` in {class_name}"
+                    + (f" ({attrs})" if attrs else "")
+                )
+
+            elif item.type == "collector":
+                collectors.append(
+                    f"  - `{item.resource_type} <| {item.query} |>` in {class_name}"
+                )
+
+            # Recursively process nested execution orders (only ExecutionItem has this)
+            if hasattr(item, "execution_order") and item.execution_order:
+                self._extract_puppetdb_items(
+                    item.execution_order, class_name, exported, collectors
+                )
 
     def _build_custom_types_summary(self, state: PuppetState) -> str:
         if not state.structured_analysis or not state.structured_analysis.custom_types:

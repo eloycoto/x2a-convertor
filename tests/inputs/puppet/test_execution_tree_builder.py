@@ -5,14 +5,16 @@ from src.inputs.puppet.execution_tree_builder import (
     PuppetExecutionTreeBuilder,
 )
 from src.inputs.puppet.models import (
-    ClassInclude,
+    ClassIncludeExecution,
     ClassInheritance,
-    ConditionalBlock,
-    IterationBlock,
+    ConditionalExecution,
+    ExportedResourceExecution,
+    IterationExecution,
     ManifestAnalysisResult,
     ManifestExecutionAnalysis,
-    PuppetResourceDeclaration,
     PuppetStructuredAnalysis,
+    ResourceDeclaration,
+    VirtualResourceExecution,
 )
 
 
@@ -80,8 +82,8 @@ class TestPuppetExecutionTreeBuilder:
                 _make_manifest(
                     "profile_haproxy",
                     "manifests/init.pp",
-                    class_includes=[
-                        ClassInclude(
+                    execution_order=[
+                        ClassIncludeExecution(
                             class_name="profile_haproxy::install",
                             relationship="include",
                         ),
@@ -90,8 +92,8 @@ class TestPuppetExecutionTreeBuilder:
                 _make_manifest(
                     "profile_haproxy::install",
                     "manifests/install.pp",
-                    resources=[
-                        PuppetResourceDeclaration(
+                    execution_order=[
+                        ResourceDeclaration(
                             resource_type="package",
                             title="haproxy",
                             attributes={"ensure": "installed"},
@@ -145,15 +147,15 @@ class TestPuppetExecutionTreeBuilder:
                 _make_manifest(
                     "a",
                     "manifests/a.pp",
-                    class_includes=[
-                        ClassInclude(class_name="b", relationship="include"),
+                    execution_order=[
+                        ClassIncludeExecution(class_name="b", relationship="include"),
                     ],
                 ),
                 _make_manifest(
                     "b",
                     "manifests/b.pp",
-                    class_includes=[
-                        ClassInclude(class_name="a", relationship="include"),
+                    execution_order=[
+                        ClassIncludeExecution(class_name="a", relationship="include"),
                     ],
                 ),
             ]
@@ -173,8 +175,8 @@ class TestPuppetExecutionTreeBuilder:
                 _make_manifest(
                     "main",
                     "manifests/init.pp",
-                    class_includes=[
-                        ClassInclude(
+                    execution_order=[
+                        ClassIncludeExecution(
                             class_name="external::module",
                             relationship="include",
                         ),
@@ -214,12 +216,12 @@ class TestPuppetExecutionTreeBuilder:
                 _make_manifest(
                     "main",
                     "manifests/init.pp",
-                    conditionals=[
-                        ConditionalBlock(
+                    execution_order=[
+                        ConditionalExecution(
                             condition="$ssl_enabled",
                             condition_type="if",
-                            resources=[
-                                PuppetResourceDeclaration(
+                            execution_order=[
+                                ResourceDeclaration(
                                     resource_type="file", title="/etc/ssl/cert.pem"
                                 ),
                             ],
@@ -242,13 +244,13 @@ class TestPuppetExecutionTreeBuilder:
                 _make_manifest(
                     "main",
                     "manifests/init.pp",
-                    iterations=[
-                        IterationBlock(
+                    execution_order=[
+                        IterationExecution(
                             iterator_type="each",
                             collection_variable="$backends",
                             item_variable="$name, $config",
-                            resources=[
-                                PuppetResourceDeclaration(
+                            execution_order=[
+                                ResourceDeclaration(
                                     resource_type="file", title="backend.cfg"
                                 ),
                             ],
@@ -271,13 +273,11 @@ class TestPuppetExecutionTreeBuilder:
                 _make_manifest(
                     "main",
                     "manifests/init.pp",
-                    exported_resources=[
-                        PuppetResourceDeclaration(
+                    execution_order=[
+                        ExportedResourceExecution(
                             resource_type="nagios_host", title="web01"
                         ),
-                    ],
-                    virtual_resources=[
-                        PuppetResourceDeclaration(resource_type="user", title="deploy"),
+                        VirtualResourceExecution(resource_type="user", title="deploy"),
                     ],
                 ),
             ]
@@ -317,8 +317,8 @@ class TestPuppetExecutionTreeBuilder:
                 _make_manifest(
                     "main",
                     "manifests/init.pp",
-                    resources=[
-                        PuppetResourceDeclaration(
+                    execution_order=[
+                        ResourceDeclaration(
                             resource_type="file",
                             title="/etc/haproxy/haproxy.cfg",
                             attributes={
@@ -327,7 +327,7 @@ class TestPuppetExecutionTreeBuilder:
                                 "mode": "0640",
                             },
                         ),
-                        PuppetResourceDeclaration(
+                        ResourceDeclaration(
                             resource_type="exec",
                             title="reload_config",
                             attributes={"command": "/usr/sbin/haproxy -c"},
@@ -352,13 +352,11 @@ class TestFormatTree:
                 _make_manifest(
                     "main",
                     "manifests/init.pp",
-                    resources=[
-                        PuppetResourceDeclaration(
-                            resource_type="package", title="haproxy"
+                    execution_order=[
+                        ResourceDeclaration(resource_type="package", title="haproxy"),
+                        ClassIncludeExecution(
+                            class_name="main::config", relationship="include"
                         ),
-                    ],
-                    class_includes=[
-                        ClassInclude(class_name="main::config", relationship="include"),
                     ],
                 ),
                 _make_manifest("main::config", "manifests/config.pp"),
@@ -379,15 +377,15 @@ class TestFormatTree:
                 _make_manifest(
                     "a",
                     "manifests/a.pp",
-                    class_includes=[
-                        ClassInclude(class_name="b", relationship="include")
+                    execution_order=[
+                        ClassIncludeExecution(class_name="b", relationship="include")
                     ],
                 ),
                 _make_manifest(
                     "b",
                     "manifests/b.pp",
-                    class_includes=[
-                        ClassInclude(class_name="c", relationship="include")
+                    execution_order=[
+                        ClassIncludeExecution(class_name="c", relationship="include")
                     ],
                 ),
                 _make_manifest("c", "manifests/c.pp"),
