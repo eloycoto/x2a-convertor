@@ -21,6 +21,7 @@ from src.exporters.agent_state import WriteAgentState
 from src.exporters.export_agent import ExportAgent
 from src.exporters.state import ExportState
 from src.model import get_runnable_config
+from src.exporters.tools.apme import APME
 from src.types import ChecklistStatus
 from src.types.telemetry import AgentMetrics
 from src.utils.config import get_config_int
@@ -94,6 +95,7 @@ class WriteAgent(ExportAgent[ExportState]):
     def __init__(self, model=None, max_attempts=None):
         super().__init__(model)
         self.max_attempts = get_config_int("MAX_WRITE_ATTEMPTS")
+        self._apme = APME()
         self._graph = self._build_internal_graph()
         self._current_metrics: AgentMetrics | None = None
 
@@ -104,13 +106,17 @@ class WriteAgent(ExportAgent[ExportState]):
         workflow.add_node("write_files", self._write_files_node)
         workflow.add_node("check_files", self._check_files_node)
         workflow.add_node("lint_files", self._lint_files_node)
+        workflow.add_node("apme_format", self._apme_format_node)
+        workflow.add_node("apme_check", self._apme_check_node)
         workflow.add_node("mark_failed", self._mark_failed_node)
 
         workflow.add_edge(START, "write_standard_files")
         workflow.add_edge("write_standard_files", "write_files")
         workflow.add_edge("write_files", "check_files")
         workflow.add_edge("check_files", "lint_files")
-        workflow.add_conditional_edges("lint_files", self._evaluate_write_node)
+        workflow.add_edge("lint_files", "apme_format")
+        workflow.add_edge("apme_format", "apme_check")
+        workflow.add_conditional_edges("apme_check", self._evaluate_write_node)
         workflow.add_edge("mark_failed", "__end__")
 
         return workflow.compile()
@@ -334,6 +340,70 @@ class WriteAgent(ExportAgent[ExportState]):
             slog.info(f"Ansible-lint result: {result}")
         except Exception as e:
             slog.error(f"Error running ansible-lint: {e}")
+
+        return state
+
+    def _apme_format_node(self, state: WriteAgentState) -> WriteAgentState:
+        """Node: Run APME format on generated Ansible files."""
+        export_state = state.export_state
+        slog = logger.bind(phase="apme_format", attempt=state.attempt)
+
+        if state.missing_files:
+            slog.info("Skipping APME format - files are missing")
+            return state
+
+        slog.info("Running APME format on generated files")
+        ansible_path = export_state.get_ansible_path()
+        __import__('ipdb').set_trace()
+        try:
+            report = self._apme.format(ansible_path, apply=True)
+            slog.info(
+                "APME format completed",
+                files_checked=report.files_checked,
+                files_changed=report.files_changed,
+            )
+        except Exception as e:
+            slog.error(f"Error running APME format: {e}")
+
+        return state
+
+    def _apme_check_node(self, state: WriteAgentState) -> WriteAgentState:
+        """Node: Run APME check on generated Ansible files."""
+        export_state = state.export_state
+        slog = logger.bind(phase="apme_check", attempt=state.attempt)
+
+        if state.missing_files:
+            slog.info("Skipping APME check - files are missing")
+            return state
+
+        slog.info("Running APME check on generated files")
+        ansible_path = export_state.get_ansible_path()
+
+        __import__('ipdb').set_trace()
+        try:
+            report = self._apme.check(ansible_path)
+            slog.info(
+                "APME check completed",
+                violations=len(report.violations),
+                errors=report.error_count,
+                warnings=report.warning_count,
+            )
+            if report.violations:
+                for v in report.violations[:5]:  # Log first 5 violations
+                    slog.debug(
+                        "APME violation",
+                        rule_id=v.rule_id,
+                        severity=v.severity,
+                        file=v.file,
+                        message=v.message[:100],
+                    )
+                if len(report.violations) > 5:
+                    slog.debug(
+                        "Additional violations not logged",
+                        count=len(report.violations) - 5,
+                    )
+        except Exception as e:
+            slog.error(f"Error running APME check: {e}")
 
         return state
 
