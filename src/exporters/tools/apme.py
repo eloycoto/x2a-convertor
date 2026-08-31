@@ -108,6 +108,73 @@ class CheckReport:
             f"{self.error_count} error(s), {self.warning_count} warning(s)."
         )
 
+    def to_markdown(self) -> str:
+        """Return violations as markdown grouped by file path.
+
+        Format:
+            ## APME Check Results
+
+            ### path/to/file.yml
+            - L42: L021 (warning): Set mode explicitly for file/copy/template
+            - L58: R108 (error): Privilege escalation detected
+
+            ### path/to/other.yml
+            - L10: L003 (warning): Each play should have a name
+        """
+        if not self.violations:
+            return "## APME Check Results\n\nNo violations found."
+
+        # Group violations by file
+        by_file: dict[str, list[CheckViolation]] = {}
+        for v in self.violations:
+            file_path = self._relative_path(v.file)
+            if file_path not in by_file:
+                by_file[file_path] = []
+            by_file[file_path].append(v)
+
+        lines = ["## APME Check Results", ""]
+        lines.append(f"Found {len(self.violations)} violation(s): "
+                     f"{self.error_count} error(s), {self.warning_count} warning(s).")
+        lines.append("")
+
+        for file_path in sorted(by_file.keys()):
+            lines.append(f"### {file_path}")
+            file_violations = sorted(by_file[file_path], key=lambda v: self._sort_key(v))
+            for v in file_violations:
+                line_str = self._format_line(v.line)
+                lines.append(f"- {line_str}: {v.rule_id} ({v.severity}): {v.message}")
+            lines.append("")
+
+        return "\n".join(lines).rstrip()
+
+    @staticmethod
+    def _relative_path(file_path: str) -> str:
+        """Convert absolute path to relative path from cwd."""
+        if not file_path:
+            return "<unknown>"
+        try:
+            return str(Path(file_path).relative_to(Path.cwd()))
+        except ValueError:
+            return file_path
+
+    @staticmethod
+    def _format_line(line: int | list[int] | None) -> str:
+        """Format line number(s) for display."""
+        if line is None:
+            return "L?"
+        if isinstance(line, list):
+            return f"L{line[0]}" if line else "L?"
+        return f"L{line}"
+
+    @staticmethod
+    def _sort_key(v: CheckViolation) -> int:
+        """Return sort key for ordering violations by line number."""
+        if v.line is None:
+            return 0
+        if isinstance(v.line, list):
+            return v.line[0] if v.line else 0
+        return v.line
+
 
 
 class APME:
