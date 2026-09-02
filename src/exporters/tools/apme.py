@@ -35,6 +35,8 @@ logger = get_logger(__name__)
 # variable names for compatibility.
 EXCLUDED_RULE_IDS: list[str] = [
     "L079",
+    "L060",
+    "L040",
 ]
 
 

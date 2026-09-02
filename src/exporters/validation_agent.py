@@ -254,7 +254,7 @@ class ValidationAgent(ExportAgent[ExportState]):
             ],
             self._current_metrics,
         )
-
+        __import__('ipdb').set_trace()
         export_state.checklist.save(export_state.get_checklist_path())
 
         message = self.get_last_ai_message(result)
