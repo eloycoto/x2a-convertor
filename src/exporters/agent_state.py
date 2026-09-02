@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from src.exporters.state import ExportState
+from src.exporters.tools.apme import CheckReport
 
 
 @dataclass
@@ -53,14 +54,14 @@ class ValidationAgentState(BaseAgentState):
     Tracks validation results and error fixing progress.
 
     Attributes:
-        validation_results: Results from validation service (dict of validator results)
-        previous_validation_results: Previous validation results for stall detection
+        validation_report: Latest APME CheckReport (rule violations)
+        previous_validation_report: Previous APME CheckReport for stall detection
         error_report: Formatted error report for LLM
         has_errors: Whether validation found errors
     """
 
-    validation_results: dict | None = None
-    previous_validation_results: dict | None = None
+    validation_report: CheckReport | None = None
+    previous_validation_report: CheckReport | None = None
     error_report: str = ""
     previous_error_report: str = ""
     has_errors: bool = False
