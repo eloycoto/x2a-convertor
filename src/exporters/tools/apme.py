@@ -25,6 +25,18 @@ from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Rule IDs excluded from every APME check run in this project, regardless of
+# environment. Keep this list short and documented -- it is a project-wide
+# policy decision, not a per-run/per-user toggle.
+#
+# L079 (role variable prefix): x2a-generated roles already namespace
+# variables per the write-agent's own conventions; this rule fires too many
+# false positives against migrated content that intentionally keeps upstream
+# variable names for compatibility.
+EXCLUDED_RULE_IDS: list[str] = [
+    "L079",
+]
+
 
 @dataclass
 class FormatReport:
@@ -271,7 +283,9 @@ class APME:
         Args:
             path: File or directory to check.
             rule_ids: If provided, only run these specific rules.
-            exclude_rule_ids: Rule IDs to skip.
+            exclude_rule_ids: Rule IDs to skip, in addition to this project's
+                static `EXCLUDED_RULE_IDS`. Defaults to `EXCLUDED_RULE_IDS`
+                when not provided.
             include_test_contents: Include test directories in the scan.
 
         Returns:
@@ -283,6 +297,8 @@ class APME:
         if not path.exists():
             slog.warning("Path does not exist")
             return CheckReport()
+
+        excluded = sorted(set(EXCLUDED_RULE_IDS) | set(exclude_rule_ids or []))
 
         # Run the engine scanner to build the content graph
         slog.debug("Running APME scan")
@@ -297,7 +313,7 @@ class APME:
         rules, _ = load_graph_rules(
             rules_dir=self._rules_dir,
             rule_id_list=rule_ids,
-            exclude_rule_ids=exclude_rule_ids,
+            exclude_rule_ids=excluded,
         )
 
         # Get the content graph from scandata
