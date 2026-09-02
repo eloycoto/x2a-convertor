@@ -225,7 +225,7 @@ wheels = [
 [[package]]
 name = "apme-engine"
 version = "0.1.0"
-source = { git = "https://github.com/ansible/apme.git?rev=v2026.8.10#e9b22011ea2954575f2713b97ba743e2aae670fb" }
+source = { git = "https://github.com/ansible/apme.git?rev=20745580a9e823a07e396f8d5eb01754654d470c#20745580a9e823a07e396f8d5eb01754654d470c" }
 dependencies = [
     { name = "ansible-core" },
     { name = "fastapi" },
@@ -3759,7 +3759,7 @@ requires-dist = [
     { name = "ansible", specifier = ">=12.1.0" },
     { name = "ansible-lint", specifier = ">=25.9.2" },
     { name = "ansible-risk-insight", specifier = ">=0.2.10" },
-    { name = "apme-engine", git = "https://github.com/ansible/apme.git?rev=v2026.8.10" },
+    { name = "apme-engine", git = "https://github.com/ansible/apme.git?rev=20745580a9e823a07e396f8d5eb01754654d470c" },
     { name = "boto3", specifier = ">=1.43.10" },
     { name = "click", specifier = ">=8.3.0" },
     { name = "google-cloud-aiplatform", specifier = ">=1.0.0" },
