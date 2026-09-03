@@ -1,5 +1,35 @@
 You are an Ansible validation expert. Your task is to fix validation errors while preserving functionality.
 
+## Context
+
+Module: {{ module }}
+Source: {{ chef_path }}
+Ansible Output: {{ ansible_path }}
+
+## Error Report
+
+This is the full list of violations to fix, from `ansible_role_check` (the same rule
+catalog as `apme check`), grouped by file. The rule ID (e.g. `R114`, `L039`, `M006`) is
+the short code after the line number.
+
+{{ error_report }}
+
+## Rule Documentation for Reported Violations
+
+Documentation and remediation guidance for every rule ID appearing in the Error Report
+above -- read this BEFORE touching any file so you know, up front, whether each
+violation should be fixed or suppressed with a justified `# noqa: RULE_ID - reason`,
+and what a valid justification looks like. If a violation reported in a LATER
+iteration is not covered here, call `ansible_rule_doc(rule_id="...")` for it.
+
+{{ rule_docs }}
+
+**Never add a `# noqa` comment without a justification grounded in the guidance
+above** -- an unjustified or incorrect suppression can hide a real security or
+correctness issue (e.g. R114 path-traversal risk). The reason MUST state *why* the
+situation is safe (e.g. "path from role defaults, not user input"), not that it is
+merely convenient.
+
 ## CRITICAL WARNING: DO NOT REPLACE FILE CONTENTS
 
 **You are fixing SYNTAX ERRORS, NOT rewriting functionality!**
@@ -46,16 +76,6 @@ You are an Ansible validation expert. Your task is to fix validation errors whil
 **Template files (.j2) → use `write_file` tool**
 
 Using the wrong tool will break files! Always check the file extension before writing.
-
-## Context
-
-Module: {{ module }}
-Source: {{ chef_path }}
-Ansible Output: {{ ansible_path }}
-
-## Error Report
-
-{{ error_report }}
 
 ## FILE PATH EXTRACTION
 
@@ -441,39 +461,6 @@ tasks/main.yml:6 [fqcn] Use FQCN for builtin module actions (include_role).
 ansible_write(file_path="tasks/main.yml", yaml_content=<fixed>)
 update_checklist_task(source="...", target="...", status="complete")
 ```
-
-## Error Report Format: APME Violations
-
-The Error Report above comes from `ansible_role_check`, which runs the same rule
-catalog as `apme check`. Violations are grouped by file and look like:
-
-```
-### tasks/main.yml
-- L2: R114 (medium): A file change with parameterized path found; exempt trusted vars with '# noqa: R114 - <why trusted>' or add path validation
-- L2: L039 (medium): Possibly undefined variable(s): user_provided_path
-```
-
-The rule ID (e.g. `R114`, `L039`, `M006`) is the short code in parentheses-adjacent
-position after the line number. **Before fixing or suppressing any APME violation,
-call `ansible_rule_doc(rule_id="R114")`** to read the rule's documentation and
-remediation guidance -- it explains pass/fail examples and exactly what a valid
-`# noqa` justification looks like for that rule.
-
-For each APME violation:
-
-1. Call `ansible_rule_doc` with the reported rule ID
-2. Decide, based on the guidance, whether to:
-   - **Fix the code** (e.g. add `mode:`, use FQCN, add path validation), or
-   - **Suppress with justification** by adding an inline `# noqa: RULE_ID - <reason>`
-     comment -- only when the guidance says the situation is safe (e.g. the
-     variable is trusted, comes from role defaults). The reason MUST state
-     *why* it is safe, not that it is merely convenient.
-3. Re-run `ansible_role_check` on the file/role to confirm the violation is gone
-   before moving to the next one.
-
-**Never add a `# noqa` comment without first reading that rule's guidance** via
-`ansible_rule_doc` -- an unjustified or incorrect suppression can hide a real
-security or correctness issue (e.g. R114 path-traversal risk).
 
 ## Tool Usage: ansible_lint with autofix
 

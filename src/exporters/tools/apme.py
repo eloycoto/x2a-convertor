@@ -19,7 +19,9 @@ from apme_engine.graph.scanner import (
     native_rules_dir,
     scan,
 )
+from apme_engine.opa_client import OpaInfrastructureError
 from apme_engine.runner import run_scan
+from apme_engine.validators.opa import OpaValidator
 
 from src.utils.logging import get_logger
 
@@ -113,6 +115,10 @@ class CheckReport:
         """Count of warning-level violations."""
         return sum(1 for v in self.violations if v.severity == "warning")
 
+    def distinct_rule_ids(self) -> list[str]:
+        """Return the sorted, deduplicated rule IDs across all violations."""
+        return sorted({v.rule_id for v in self.violations})
+
     def summary(self) -> str:
         """Return a human-readable summary."""
         if not self.violations:
@@ -147,13 +153,17 @@ class CheckReport:
             by_file[file_path].append(v)
 
         lines = ["## APME Check Results", ""]
-        lines.append(f"Found {len(self.violations)} violation(s): "
-                     f"{self.error_count} error(s), {self.warning_count} warning(s).")
+        lines.append(
+            f"Found {len(self.violations)} violation(s): "
+            f"{self.error_count} error(s), {self.warning_count} warning(s)."
+        )
         lines.append("")
 
         for file_path in sorted(by_file.keys()):
             lines.append(f"### {file_path}")
-            file_violations = sorted(by_file[file_path], key=lambda v: self._sort_key(v))
+            file_violations = sorted(
+                by_file[file_path], key=lambda v: self._sort_key(v)
+            )
             for v in file_violations:
                 line_str = self._format_line(v.line)
                 lines.append(f"- {line_str}: {v.rule_id} ({v.severity}): {v.message}")
@@ -188,7 +198,6 @@ class CheckReport:
         if isinstance(v.line, list):
             return v.line[0] if v.line else 0
         return v.line
-
 
 
 class APME:
@@ -274,13 +283,23 @@ class APME:
         *,
         rule_ids: list[str] | None = None,
         exclude_rule_ids: list[str] | None = None,
-        include_test_contents: bool = False,
+        include_test_contents: bool = True,
+        include_opa_rules: bool = True,
     ) -> CheckReport:
         """Run APME validation checks on Ansible content.
 
-        Uses the native graph-based scanner to evaluate rules against
-        the Ansible project structure. This is the core validation engine
-        that powers `apme check`.
+        Combines two of the same rule sources `apme check` uses: the native
+        graph-based scanner (structural rules like duplicate keys, role
+        variable prefixing) and the OPA/Rego rule bundle (style/best-practice
+        rules like preferring `command` over `shell`, avoiding `lineinfile`).
+        `rule_ids`/`exclude_rule_ids` filtering applies to both sources.
+
+        Unlike the `apme` CLI (which drives a full gRPC daemon pipeline that
+        also includes ansible-risk-insight, secret scanning, and dependency
+        health checks), this only runs the two rule sources above -- no
+        daemon, and OPA evaluation needs a local `opa` binary or Podman
+        (see `apme_engine.opa_client`). If neither is available, OPA rules
+        are skipped and only native rules are reported.
 
         Args:
             path: File or directory to check.
@@ -288,7 +307,13 @@ class APME:
             exclude_rule_ids: Rule IDs to skip, in addition to this project's
                 static `EXCLUDED_RULE_IDS`. Defaults to `EXCLUDED_RULE_IDS`
                 when not provided.
-            include_test_contents: Include test directories in the scan.
+            include_test_contents: Include test directories (e.g. `molecule/`)
+                in the scan. Defaults to True -- molecule playbooks go through
+                the same rules as the rest of the role (see R114 on
+                variable-built paths in converge.yml/verify.yml).
+            include_opa_rules: Also evaluate the OPA/Rego rule bundle, in
+                addition to native graph rules. Silently skipped (with a
+                warning) if OPA is unavailable in this environment.
 
         Returns:
             CheckReport with violations and scan statistics.
@@ -336,6 +361,9 @@ class APME:
         # Convert to violation dicts
         violation_dicts = graph_report_to_violations(graph_report)
 
+        if include_opa_rules:
+            violation_dicts += self._run_opa_rules(context, rule_ids, excluded, slog)
+
         # Convert to our dataclass format
         violations = [
             CheckViolation(
@@ -358,6 +386,30 @@ class APME:
 
         slog.info(report.summary())
         return report
+
+    @staticmethod
+    def _run_opa_rules(
+        context, rule_ids: list[str] | None, excluded: list[str], slog
+    ) -> list[dict]:
+        """Run the OPA/Rego rule bundle and return filtered violation dicts.
+
+        Returns an empty list (with a warning logged) if OPA is unavailable
+        in this environment (no `opa` binary or Podman) -- OPA evaluation is
+        a best-effort addition, never a hard requirement for `check()`.
+        """
+        try:
+            opa_violations = OpaValidator().run(context)
+        except (OpaInfrastructureError, FileNotFoundError, OSError) as e:
+            slog.warning(f"OPA rule evaluation unavailable, skipping: {e}")
+            return []
+        except Exception as e:
+            slog.warning(f"OPA rule evaluation failed, skipping: {e}")
+            return []
+
+        filtered = [v for v in opa_violations if v.get("rule_id") not in excluded]
+        if rule_ids is not None:
+            filtered = [v for v in filtered if v.get("rule_id") in rule_ids]
+        return filtered
 
     @staticmethod
     def _normalize_line(line: object) -> int | list[int] | None:

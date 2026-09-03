@@ -27,7 +27,7 @@ from src.utils.config import get_config_int
 from src.utils.logging import get_logger
 from tools.ansible_lint import AnsibleLintTool
 from tools.ansible_role_check import AnsibleRoleCheckTool
-from tools.ansible_rule_doc import AnsibleRuleDocTool
+from tools.ansible_rule_doc import AnsibleRuleDocTool, build_rule_docs
 from tools.ansible_write import AnsibleWriteTool
 from tools.copy_file import CopyFileWithMkdirTool
 from tools.diff_file import DiffFileTool
@@ -217,6 +217,7 @@ class ValidationAgent(ExportAgent[ExportState]):
             return state
 
         slog.info("APME check passed")
+
         validation_report = f"{SUMMARY_SUCCESS_MESSAGE}\n\n{report.to_markdown()}"
         export_state = export_state.update(validation_report=validation_report)
         state.export_state = export_state
@@ -240,11 +241,17 @@ class ValidationAgent(ExportAgent[ExportState]):
 
         ansible_path = export_state.get_ansible_path()
 
+        rule_ids = (
+            state.validation_report.distinct_rule_ids()
+            if state.validation_report
+            else []
+        )
         validation_task = get_prompt(self.USER_PROMPT_NAME).format(
             module=export_state.module,
             chef_path=export_state.path,
             ansible_path=ansible_path,
             error_report=state.error_report,
+            rule_docs=build_rule_docs(rule_ids),
         )
 
         result = self.invoke_react(
@@ -254,7 +261,7 @@ class ValidationAgent(ExportAgent[ExportState]):
             ],
             self._current_metrics,
         )
-        __import__('ipdb').set_trace()
+        __import__("ipdb").set_trace()
         export_state.checklist.save(export_state.get_checklist_path())
 
         message = self.get_last_ai_message(result)
@@ -365,6 +372,7 @@ class ValidationAgent(ExportAgent[ExportState]):
     # -------------------------------------------------------------------------
 
     def execute(self, state: ExportState, metrics: AgentMetrics | None) -> ExportState:
+        __import__('ipdb').set_trace()
         """Execute validation workflow with internal retry loop."""
         from src.exporters.to_ansible import MigrationPhase
 
