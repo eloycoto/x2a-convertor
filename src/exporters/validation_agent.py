@@ -19,14 +19,14 @@ from src.exporters.agent_state import ValidationAgentState
 from src.exporters.export_agent import ExportAgent
 from src.exporters.services import CollectionManager, InstallResultSummary
 from src.exporters.state import ExportState
-from src.exporters.tools.apme import APME, CheckReport
+from src.exporters.tools.apme import APME, ApmeRuleDoc, CheckReport
 from src.model import get_runnable_config
 from src.types import SUMMARY_SUCCESS_MESSAGE
 from src.types.telemetry import AgentMetrics
 from src.utils.config import get_config_int
 from src.utils.logging import get_logger
 from tools.ansible_role_check import AnsibleRoleCheckTool
-from tools.ansible_rule_doc import AnsibleRuleDocTool, build_rule_docs
+from tools.ansible_rule_doc import AnsibleRuleDocTool
 from tools.ansible_write import AnsibleWriteTool
 from tools.copy_file import CopyFileWithMkdirTool
 from tools.validated_write import ValidatedWriteTool
@@ -202,20 +202,20 @@ class ValidationAgent(ExportAgent[ExportState]):
 
         state.previous_validation_report = state.validation_report
         state.validation_report = report
+
         # Mirrors `apme check` exit-code semantics: any violation is a failure,
         # regardless of severity (0 = no violations, 1 = violations found).
         state.has_errors = report.has_violations
 
         if state.has_errors:
-            state.previous_error_report = state.error_report
-            state.error_report = report.to_markdown()
-            slog.warning(f"APME check found violations:\n{state.error_report}")
+            # @AI-TODO can we list the number of errors? XML_errors is not good!
+            slog.warning(f"APME check found violations:\n{report.to_xml_prompt()}")
             return state
 
         slog.info("APME check passed")
 
-        validation_report = f"{SUMMARY_SUCCESS_MESSAGE}\n\n{report.to_markdown()}"
-        export_state = export_state.update(validation_report=validation_report)
+        success_report = f"{SUMMARY_SUCCESS_MESSAGE}\n\n{report.to_xml_prompt()}"
+        export_state = export_state.update(validation_report=success_report)
         state.export_state = export_state
         state.complete = True
 
@@ -237,19 +237,17 @@ class ValidationAgent(ExportAgent[ExportState]):
 
         ansible_path = export_state.get_ansible_path()
 
-        rule_ids = (
-            state.validation_report.distinct_rule_ids()
-            if state.validation_report
-            else []
+        assert state.validation_report is not None, (
+            "validation_report must be set before fixing errors"
         )
         validation_task = get_prompt(self.USER_PROMPT_NAME).format(
             module=export_state.module,
             chef_path=export_state.path,
             ansible_path=ansible_path,
-            error_report=state.error_report,
-            rule_docs=build_rule_docs(rule_ids),
+            error_report=state.render_errors(),
+            rule_docs=ApmeRuleDoc.render_all(state.validation_report.get_errors_doc()),
         )
-        __import__('ipdb').set_trace()
+        __import__("ipdb").set_trace()
         result = self.invoke_react(
             export_state,
             [
@@ -258,7 +256,7 @@ class ValidationAgent(ExportAgent[ExportState]):
             self._current_metrics,
         )
         export_state.checklist.save(export_state.get_checklist_path())
-        __import__('ipdb').set_trace()
+
         message = self.get_last_ai_message(result)
         if message:
             export_state = export_state.update(validation_report=message.text)
@@ -281,13 +279,13 @@ class ValidationAgent(ExportAgent[ExportState]):
         reason = self._get_failure_reason(state)
         slog.error(reason)
 
+        errors = state.render_errors()
         export_state = state.export_state.mark_failed(
-            f"{reason}\nErrors remain:\n{state.error_report}"
+            f"{reason}\nErrors remain:\n{errors}"
         )
         export_state = export_state.update(
             validation_report=(
-                f"Validation incomplete after {state.attempt} attempts:\n"
-                f"{state.error_report}"
+                f"Validation incomplete after {state.attempt} attempts:\n{errors}"
             )
         )
         state.export_state = export_state
@@ -353,7 +351,7 @@ class ValidationAgent(ExportAgent[ExportState]):
         if self._errors_are_stale(state):
             slog.warning(
                 f"Stall detected: same error types persist after fix attempt\n"
-                f"Latest errors:\n{state.error_report}"
+                f"Latest errors:\n{state.render_errors()}"
             )
             return "mark_failed"
 

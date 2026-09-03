@@ -9,8 +9,17 @@ Ansible Output: {{ ansible_path }}
 ## Error Report
 
 This is the full list of violations to fix, from `ansible_role_check` (the same rule
-catalog as `apme check`), grouped by file. The rule ID (e.g. `R114`, `L039`, `M006`) is
-the short code after the line number.
+catalog as `apme check`), as XML grouped by file:
+
+```xml
+<apme_check_results total="N" errors="N" warnings="N">
+  <file path="tasks/nginx.yml">
+    <violation line="46" rule="R114" severity="medium">message text</violation>
+  </file>
+</apme_check_results>
+```
+
+The rule ID is the `rule` attribute (e.g. `R114`, `L039`, `M006`).
 
 {{ error_report }}
 
@@ -21,6 +30,15 @@ above -- read this BEFORE touching any file so you know, up front, whether each
 violation should be fixed or suppressed with a justified `# noqa: RULE_ID - reason`,
 and what a valid justification looks like. If a violation reported in a LATER
 iteration is not covered here, call `ansible_rule_doc(rule_id="...")` for it.
+
+```xml
+<rule_documentation>
+  <rule id="R114">
+    <documentation>...description, pass/fail examples...</documentation>
+    <remediation_guidance>...when to fix vs. justify a noqa...</remediation_guidance>
+  </rule>
+</rule_documentation>
+```
 
 {{ rule_docs }}
 
@@ -82,21 +100,22 @@ do not fall back to a different tool.
 
 ## FILE PATH EXTRACTION
 
-The Error Report above (from `ansible_role_check`) lists violations grouped
-under a `### <file>` heading, with each violation line formatted as:
+The Error Report above (from `ansible_role_check`) lists violations nested
+under `<file path="...">` elements, with each violation as:
 
+```xml
+<violation line="LINE_NUMBER" rule="RULE_ID" severity="SEVERITY">message</violation>
 ```
-- L<LINE_NUMBER>: <RULE_ID> (<severity>): <message>
-```
 
-**Use the file path from the `###` heading directly** -- it is already
-relative to the Ansible role root shown above. Do not guess or recompute it.
+**Use the `path` attribute of the enclosing `<file>` element directly** --
+it is already relative to the Ansible role root shown above. Do not guess
+or recompute it.
 
-**Before deciding what a given `L<N>` refers to, read the file and count
-lines directly (or use a line-numbered read) rather than guessing which
-task a line number belongs to.** Line numbers shift after every edit, so
-re-run `ansible_role_check` and re-read the file after each fix instead of
-reusing a previous line-number mental model.
+**Before deciding what a given `line` attribute refers to, read the file
+and count lines directly (or use a line-numbered read) rather than
+guessing which task a line number belongs to.** Line numbers shift after
+every edit, so re-run `ansible_role_check` and re-read the file after each
+fix instead of reusing a previous line-number mental model.
 
 ## Workflow
 

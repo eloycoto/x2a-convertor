@@ -4,8 +4,10 @@ Provides native Python access to APME's formatting, validation, and rule documen
 without subprocess calls.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from xml.sax.saxutils import escape, quoteattr
 
 from apme_engine.formatter import (
     FormatResult,
@@ -20,6 +22,7 @@ from apme_engine.graph.scanner import (
     scan,
 )
 from apme_engine.opa_client import OpaInfrastructureError
+from apme_engine.rule_catalog import get_rule_documentation, get_rule_guidance
 from apme_engine.runner import run_scan
 from apme_engine.validators.opa import OpaValidator
 
@@ -61,6 +64,79 @@ class FormatReport:
         if self.files_changed == 0:
             return f"All {self.files_checked} file(s) already formatted."
         return f"Reformatted {self.files_changed}/{self.files_checked} file(s)."
+
+
+@dataclass
+class ApmeRuleDoc:
+    """Documentation and remediation guidance for a single APME rule.
+
+    Attributes:
+        rule_id: Rule identifier (e.g. R114, L039, M006).
+        documentation: Rule description with pass/fail examples, or None if
+            the catalog has no documentation for this rule.
+        guidance: AI-remediation guidance (when to fix vs. justify a noqa),
+            or None if the catalog has no guidance for this rule.
+    """
+
+    rule_id: str
+    documentation: str | None = None
+    guidance: str | None = None
+
+    @classmethod
+    def from_rule_id(cls, rule_id: str) -> "ApmeRuleDoc | None":
+        """Build an ApmeRuleDoc by looking up a rule ID in APME's catalog.
+
+        Returns:
+            ApmeRuleDoc, or None if the catalog has neither documentation
+            nor guidance for this rule ID.
+        """
+        documentation = get_rule_documentation(rule_id)
+        guidance = get_rule_guidance(rule_id)
+
+        if documentation is None and guidance is None:
+            return None
+
+        return cls(rule_id=rule_id, documentation=documentation, guidance=guidance)
+
+    def to_xml_prompt(self) -> str:
+        """Render this rule's documentation as XML for an LLM prompt.
+
+        Format:
+            <rule id="R114">
+              <documentation>...markdown body, examples...</documentation>
+              <remediation_guidance>...</remediation_guidance>
+            </rule>
+        """
+        lines = [f"<rule id={quoteattr(self.rule_id)}>"]
+        if self.documentation:
+            lines.append(
+                f"  <documentation>{escape(self.documentation)}</documentation>"
+            )
+        if self.guidance:
+            lines.append(
+                f"  <remediation_guidance>{escape(self.guidance)}</remediation_guidance>"
+            )
+        lines.append("</rule>")
+        return "\n".join(lines)
+
+    @staticmethod
+    def render_all(docs: Iterable["ApmeRuleDoc"]) -> str:
+        """Render a collection of rule docs as one XML block for a prompt.
+
+        Format:
+            <rule_documentation>
+              <rule id="R114">...</rule>
+              <rule id="L039">...</rule>
+            </rule_documentation>
+
+        Returns a self-closing `<rule_documentation/>` when `docs` is empty.
+        """
+        docs = list(docs)
+        if not docs:
+            return "<rule_documentation/>"
+
+        body = "\n".join(doc.to_xml_prompt() for doc in docs)
+        return f"<rule_documentation>\n{body}\n</rule_documentation>"
 
 
 @dataclass
@@ -119,6 +195,25 @@ class CheckReport:
         """Return the sorted, deduplicated rule IDs across all violations."""
         return sorted({v.rule_id for v in self.violations})
 
+    def get_errors_doc(self) -> list[ApmeRuleDoc]:
+        """Return documentation for every distinct rule ID in this report.
+
+        Used to pre-populate a fix-errors prompt with docs for every rule
+        reported in the current check, so the agent has remediation
+        guidance and pass/fail examples on its very first turn instead of
+        needing a round of ``ansible_rule_doc`` tool calls before it can
+        start fixing anything.
+
+        Returns:
+            One ApmeRuleDoc per distinct rule ID that has documentation or
+            guidance in the catalog (rule IDs without either are skipped).
+        """
+        return [
+            doc
+            for rule_id in self.distinct_rule_ids()
+            if (doc := ApmeRuleDoc.from_rule_id(rule_id)) is not None
+        ]
+
     def summary(self) -> str:
         """Return a human-readable summary."""
         if not self.violations:
@@ -128,21 +223,27 @@ class CheckReport:
             f"{self.error_count} error(s), {self.warning_count} warning(s)."
         )
 
-    def to_markdown(self) -> str:
-        """Return violations as markdown grouped by file path.
+    def to_xml_prompt(self) -> str:
+        """Return violations as XML grouped by file path, for LLM prompts.
+
+        XML gives unambiguous, machine-parseable boundaries between the
+        report's own structure (file paths, per-violation rule/line/severity)
+        and arbitrary text inside violation messages or downstream rule
+        documentation/YAML examples that get concatenated after this report
+        in a prompt -- unlike Markdown headers (`###`) or `---` separators,
+        which can collide with headings or YAML document markers that
+        legitimately appear inside that other content.
 
         Format:
-            ## APME Check Results
-
-            ### path/to/file.yml
-            - L42: L021 (warning): Set mode explicitly for file/copy/template
-            - L58: R108 (error): Privilege escalation detected
-
-            ### path/to/other.yml
-            - L10: L003 (warning): Each play should have a name
+            <apme_check_results total="2" errors="0" warnings="0">
+              <file path="tasks/nginx.yml">
+                <violation line="46" rule="R114" severity="medium">A file change with parameterized path found</violation>
+                <violation line="46" rule="L017" severity="low">Avoid relative path in src</violation>
+              </file>
+            </apme_check_results>
         """
         if not self.violations:
-            return "## APME Check Results\n\nNo violations found."
+            return '<apme_check_results total="0" errors="0" warnings="0"/>'
 
         # Group violations by file
         by_file: dict[str, list[CheckViolation]] = {}
@@ -152,24 +253,29 @@ class CheckReport:
                 by_file[file_path] = []
             by_file[file_path].append(v)
 
-        lines = ["## APME Check Results", ""]
-        lines.append(
-            f"Found {len(self.violations)} violation(s): "
-            f"{self.error_count} error(s), {self.warning_count} warning(s)."
-        )
-        lines.append("")
+        lines = [
+            f'<apme_check_results total="{len(self.violations)}" '
+            f'errors="{self.error_count}" warnings="{self.warning_count}">'
+        ]
 
         for file_path in sorted(by_file.keys()):
-            lines.append(f"### {file_path}")
+            lines.append(f"  <file path={quoteattr(file_path)}>")
             file_violations = sorted(
                 by_file[file_path], key=lambda v: self._sort_key(v)
             )
             for v in file_violations:
-                line_str = self._format_line(v.line)
-                lines.append(f"- {line_str}: {v.rule_id} ({v.severity}): {v.message}")
-            lines.append("")
+                line_str = self._format_line(v.line).removeprefix("L")
+                lines.append(
+                    f"    <violation line={quoteattr(line_str)} "
+                    f"rule={quoteattr(v.rule_id)} "
+                    f"severity={quoteattr(v.severity)}>"
+                    f"{escape(v.message)}</violation>"
+                )
+            lines.append("  </file>")
 
-        return "\n".join(lines).rstrip()
+        lines.append("</apme_check_results>")
+
+        return "\n".join(lines)
 
     @staticmethod
     def _relative_path(file_path: str) -> str:
@@ -206,7 +312,7 @@ class APME:
     Provides native Python access to:
     - format(): YAML formatting with Ansible-specific normalization
     - check(): Graph-based rule evaluation for Ansible best practices
-    - get_documentation_for_rule(): Rule documentation lookup
+    - get_rule_doc(): Rule documentation + remediation guidance lookup
 
     Example:
         apme = APME()
@@ -217,6 +323,8 @@ class APME:
         check_report = apme.check("/path/to/ansible/role")
         for violation in check_report.violations:
             print(f"{violation.rule_id}: {violation.message}")
+
+        rule_doc = apme.get_rule_doc("R114")
     """
 
     def __init__(self) -> None:
@@ -386,6 +494,19 @@ class APME:
 
         slog.info(report.summary())
         return report
+
+    @staticmethod
+    def get_rule_doc(rule_id: str) -> ApmeRuleDoc | None:
+        """Look up documentation and remediation guidance for one rule ID.
+
+        Args:
+            rule_id: Rule identifier reported by check() (e.g. R114, L039).
+
+        Returns:
+            ApmeRuleDoc, or None if the catalog has no documentation or
+            guidance for this rule ID.
+        """
+        return ApmeRuleDoc.from_rule_id(rule_id)
 
     @staticmethod
     def _run_opa_rules(
