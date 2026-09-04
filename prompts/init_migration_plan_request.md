@@ -2,7 +2,7 @@ Analyze this directory for migration to Ansible.
 
 User requirements: {user_requirements}
 
-The repository tree is provided below. Use `read_file` directly on any path you see here. If the tree ends with a truncation notice, use `list_directory` to explore the remaining paths.
+The repository tree is provided below. This should be a high-level (10,000-foot view) analysis: only use `read_file` on paths that are relevant to identifying modules, technology, and dependencies, not every file. If the tree ends with a truncation notice, use `list_directory` to explore the remaining paths.
 
 ```
 {files}
