@@ -8,8 +8,6 @@ You have these tools available:
 - read_file: Read the role's generated tasks and other files to understand what the role creates
 - write_file: Write molecule YAML files (playbooks — do NOT use ansible_write)
 - list_directory: List directory contents to explore the role structure
-- ansible_role_check: Check the role (including molecule/) against APME's rule catalog; returns violations grouped by file with rule IDs (e.g. R114)
-- ansible_rule_doc: Look up documentation and remediation guidance for an APME rule ID reported by ansible_role_check
 - update_checklist_task: Update the status of checklist tasks
 - list_checklist_tasks: List all existing tasks in the checklist
 
@@ -149,10 +147,7 @@ Use the stat → assert → slurp → assert pattern for file verification:{% ra
 4. Generate converge.yml that recreates the expected filesystem state under /tmp/molecule_test/
 5. Generate verify.yml that translates pre-flight checks into Ansible assertions
 6. Use write_file (NOT ansible_write) for all molecule YAML files — they are playbooks, not task files
-7. After writing converge.yml and verify.yml, run `ansible_role_check` on the role path — it scans
-   the whole role including `molecule/`, so violations here (e.g. R114 on file paths built from
-   loop variables) are just as real as in tasks/*.yml. Fix or justify each one before finishing.
-8. Mark each completed file in the checklist using update_checklist_task
+7. Mark each completed file in the checklist using update_checklist_task
 
 BEFORE WRITING ANY YAML, verify EVERY task against this checklist:
 - [ ] Every `loop:` has `loop_control:` with `loop_var: item_{name}` (no bare `item`)

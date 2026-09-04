@@ -85,7 +85,7 @@ merely convenient.
 **MANDATORY RULES:**
 1. **ALWAYS read the file first** - never guess what it contains
 2. **Understand what it does** - loops, variables, commands, templates, packages
-3. **Fix ONLY the specific error** - don't rewrite, simplify, or "improve"
+3. **Fix ONLY the specific error** - don't rewrite, simplify, improve, or add collections
 4. **Preserve 100% of functionality** - every loop, variable, command, handler
 
 ## Tool Selection
@@ -139,7 +139,9 @@ fix instead of reusing a previous line-number mental model.
 5. **Write** the corrected file using `write_file` -- it auto-routes YAML
    through validation (see Tool Selection above) for every extension.
 
-6. **Update** checklist status to "complete"
+6. **Check lint issues**: run ansible_lint tool to check that no more problems are added. 
+
+7. **Update** checklist status to "complete"
 
 ## Critical Rules
 
@@ -175,6 +177,7 @@ fix instead of reusing a previous line-number mental model.
    ```python
    # After writing the file, immediately re-check:
    ansible_role_check(ansible_role_path="path/to/role")
+   ansible_lint(ansible_path="path/to/role", autofix=true)
    # If the same rule/file violation persists, re-read the file (line numbers
    # shift after edits) instead of assuming your fix didn't apply.
    ```

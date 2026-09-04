@@ -81,6 +81,7 @@ class ValidationAgent(ExportAgent[ExportState]):
         lambda: CopyFileWithMkdirTool(),
         lambda: AnsibleRoleCheckTool(),
         lambda: AnsibleRuleDocTool(),
+        lambda: AnsibleLintTool(),
     ]
 
     USER_PROMPT_NAME = "export_ansible_validation_task"

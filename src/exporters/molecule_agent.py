@@ -23,8 +23,6 @@ from src.model import get_runnable_config
 from src.types import ChecklistStatus
 from src.types.telemetry import AgentMetrics
 from src.utils.logging import get_logger
-from tools.ansible_role_check import AnsibleRoleCheckTool
-from tools.ansible_rule_doc import AnsibleRuleDocTool
 
 logger = get_logger(__name__)
 
@@ -54,8 +52,6 @@ class MoleculeAgent(ExportAgent[ExportState]):
         lambda: ReadFileTool(),
         lambda: WriteFileTool(),
         lambda: ListDirectoryTool(),
-        lambda: AnsibleRoleCheckTool(),
-        lambda: AnsibleRuleDocTool(),
     ]
 
     SYSTEM_PROMPT_NAME = "export_ansible_molecule_system"

@@ -62,8 +62,6 @@ class WriteAgent(ExportAgent[ExportState]):
         lambda: CopyFileWithMkdirTool(),
         lambda: AnsibleWriteTool(),
         lambda: AnsibleLintTool(),
-        lambda: AnsibleRoleCheckTool(),
-        lambda: AnsibleRuleDocTool(),
         lambda: AnsibleDocLookupTool(),
     ]
 
