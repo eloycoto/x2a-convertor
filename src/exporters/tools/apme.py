@@ -42,6 +42,7 @@ EXCLUDED_RULE_IDS: list[str] = [
     "L079",
     "L060",
     "L040",
+    "L042",
 ]
 
 

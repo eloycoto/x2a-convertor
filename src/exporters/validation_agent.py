@@ -25,6 +25,7 @@ from src.types import SUMMARY_SUCCESS_MESSAGE
 from src.types.telemetry import AgentMetrics
 from src.utils.config import get_config_int
 from src.utils.logging import get_logger
+from tools.ansible_lint import AnsibleLintTool
 from tools.ansible_role_check import AnsibleRoleCheckTool
 from tools.ansible_rule_doc import AnsibleRuleDocTool
 from tools.ansible_write import AnsibleWriteTool

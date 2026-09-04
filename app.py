@@ -21,7 +21,6 @@ from src.report import report_artifacts
 from src.types.technology import Technology
 from src.utils.logging import get_logger, setup_logging
 
-
 logger = get_logger(__name__)
 
 
@@ -167,6 +166,7 @@ def migrate(
         high_level_migration_plan,
         source_dir=source_dir,
     )
+
 
 @cli.command("publish-project")
 @click.argument("project_id")
