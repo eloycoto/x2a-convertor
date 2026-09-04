@@ -210,8 +210,7 @@ class ValidationAgent(ExportAgent[ExportState]):
         state.has_errors = report.has_violations
 
         if state.has_errors:
-            # @AI-TODO can we list the number of errors? XML_errors is not good!
-            slog.warning(f"APME check found violations:\n{report.to_xml_prompt()}")
+            slog.warning(f"APME check found violations: {report.summary()}")
             return state
 
         slog.info("APME check passed")
