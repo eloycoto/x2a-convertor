@@ -12,6 +12,7 @@ from typing import ClassVar, Literal
 from langchain_community.tools.file_management.list_dir import ListDirectoryTool
 from langchain_community.tools.file_management.read import ReadFileTool
 from langchain_community.tools.file_management.write import WriteFileTool
+from tools.ansible_lint import AnsibleLintTool
 from langchain_core.tools import BaseTool
 from langgraph.graph import START, StateGraph
 
@@ -52,6 +53,7 @@ class MoleculeAgent(ExportAgent[ExportState]):
         lambda: ReadFileTool(),
         lambda: WriteFileTool(),
         lambda: ListDirectoryTool(),
+        lambda: AnsibleLintTool(),
     ]
 
     SYSTEM_PROMPT_NAME = "export_ansible_molecule_system"
