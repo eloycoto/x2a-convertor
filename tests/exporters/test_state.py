@@ -49,6 +49,33 @@ class TestExportStateReportStatus:
             checklist=checklist,
         )
 
+    def test_get_ansible_project_path(self, base_state):
+        assert base_state.get_ansible_project_path() == Path("ansible")
+
+    def test_get_ansible_role_path_uses_adjacent_collection(self, base_state):
+        assert base_state.get_ansible_path() == (
+            "ansible/collections/ansible_collections/x2a/project/roles/test_module"
+        )
+
+    def test_molecule_paths_are_project_level_and_module_specific(self, base_state):
+        assert base_state.get_ansible_fqcn() == "x2a.project.test_module"
+        assert base_state.get_run_playbook_path() == Path("ansible/run_test_module.yml")
+        assert base_state.get_molecule_scenario_path() == Path(
+            "ansible/molecule/test_module"
+        )
+
+    def test_ensure_molecule_checklist_registers_project_artifacts(self, base_state):
+        base_state.ensure_molecule_checklist()
+        targets = base_state.get_molecule_checklist_targets()
+        assert len(targets) == 10
+        assert all(
+            base_state.checklist.find_task("N/A", path) is not None for path in targets
+        )
+        assert all(
+            task.category == "molecule"
+            for task in base_state.checklist.items_by_category(include={"molecule"})
+        )
+
     # -- report_status dispatching --
 
     def test_success_report_contains_module_name(self, base_state):
@@ -91,6 +118,17 @@ class TestExportStateReportStatus:
     def test_success_report_omits_review_when_empty(self, base_state):
         report = base_state.report_status()
         assert "Found 2 issues, fixed 2" not in report
+
+    def test_report_distinguishes_generated_molecule_tests_from_execution(
+        self, base_state
+    ):
+        state = base_state.update(
+            molecule_status="statically_validated_not_executed",
+            molecule_report="Developer/CI execution is required.",
+        )
+        report = state.report_status()
+        assert "**Status:** statically_validated_not_executed" in report
+        assert "Developer/CI execution is required." in report
 
     def test_success_report_includes_review_when_present(self, base_state):
         state = base_state.update(review_report="Found 2 issues, fixed 2")

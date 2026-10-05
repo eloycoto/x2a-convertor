@@ -15,6 +15,7 @@ from src.exporters.credential_agent import CredentialAgent
 from src.exporters.molecule_agent import MoleculeAgent
 from src.exporters.planning_agent import PlanningAgent
 from src.exporters.review_agent import ReviewAgent
+from src.exporters.services.ansible_scaffold import Ansiblescaffold
 from src.exporters.state import ExportState
 from src.exporters.types import MigrationCategory
 from src.exporters.validation_agent import ValidationAgent
@@ -35,6 +36,7 @@ logger = get_logger(__name__)
 class MigrationPhase(StrEnum):
     """Phases of the migration workflow"""
 
+    SCAFFOLDING = "scaffolding"
     INITIALIZING = "initializing"
     PLANNING = "planning"
     WRITING = "writing"
@@ -91,6 +93,7 @@ class ToAnsibleSubagent:
     def _create_workflow(self):
         """Create the main migration workflow."""
         workflow = StateGraph(ExportState)
+        workflow.add_node("scaffold_project", self._scaffold_project)
         workflow.add_node("initialize", self._initialize)
         workflow.add_node("discover_collections", self.discovery_agent)
         workflow.add_node("extract_credentials", self.credential_agent)
@@ -101,7 +104,12 @@ class ToAnsibleSubagent:
         workflow.add_node("validate_migration", self.validation_agent)
         workflow.add_node("finalize", self._finalize)
 
-        workflow.add_edge(START, "initialize")
+        workflow.add_edge(START, "scaffold_project")
+        workflow.add_conditional_edges(
+            "scaffold_project",
+            self._continue_after_scaffolding,
+            {"continue": "initialize", "failed": "finalize"},
+        )
         workflow.add_edge("initialize", "discover_collections")
         workflow.add_edge("discover_collections", "extract_credentials")
         workflow.add_edge("extract_credentials", "plan_migration")
@@ -112,10 +120,10 @@ class ToAnsibleSubagent:
         workflow.add_conditional_edges(
             "write_migration", self._check_failure_after_agent
         )
+        workflow.add_conditional_edges("review_role", self._check_failure_after_agent)
         workflow.add_conditional_edges(
             "molecule_testing", self._check_failure_after_agent
         )
-        workflow.add_conditional_edges("review_role", self._check_failure_after_agent)
         workflow.add_conditional_edges(
             "validate_migration", self._check_failure_after_agent
         )
@@ -123,6 +131,29 @@ class ToAnsibleSubagent:
         workflow.add_edge("finalize", END)
 
         return workflow.compile()
+
+    def _scaffold_project(self, state: ExportState) -> ExportState:
+        """Create the Ansible project and its migration role before planning."""
+        project_path = state.get_ansible_project_path()
+        logger.info(f"Scaffolding Ansible project at {project_path}")
+        try:
+            project = Ansiblescaffold(path=project_path).create()
+            role_path = project.create_role(str(state.module))
+        except (RuntimeError, OSError) as error:
+            message = f"Unable to scaffold Ansible project or role: {error}"
+            logger.error(message)
+            return state.mark_failed(message).update(
+                current_phase=MigrationPhase.FAILED
+            )
+
+        logger.info(f"Ansible role ready at {role_path}")
+        return state.update(current_phase=MigrationPhase.SCAFFOLDING)
+
+    def _continue_after_scaffolding(
+        self, state: ExportState
+    ) -> Literal["continue", "failed"]:
+        """Skip planning when project or role scaffolding failed."""
+        return "failed" if state.failed else "continue"
 
     def _initialize(self, state: ExportState) -> ExportState:
         """Initialize workflow by loading or creating checklist."""
@@ -155,13 +186,13 @@ class ToAnsibleSubagent:
         if state.current_phase == MigrationPhase.PLANNING:
             return "write_migration"
         if state.current_phase in (MigrationPhase.WRITING, "writing"):
+            return "review_role"
+        if state.current_phase in (MigrationPhase.REVIEWING, "reviewing"):
             return "molecule_testing"
         if state.current_phase in (
             MigrationPhase.MOLECULE_TESTING,
             "molecule_testing",
         ):
-            return "review_role"
-        if state.current_phase in (MigrationPhase.REVIEWING, "reviewing"):
             return "validate_migration"
         return "finalize"
 
@@ -169,10 +200,11 @@ class ToAnsibleSubagent:
         """Finalize migration and report results."""
         slog = logger.bind(phase="finalize")
 
-        assert state.checklist is not None, (
-            "Checklist must be initialized before finalize"
-        )
-        stats = state.checklist.get_stats()
+        checklist = state.checklist
+        if checklist is None:
+            checklist = Checklist(str(self.module), MigrationCategory)
+            state = state.update(checklist=checklist)
+        stats = checklist.get_stats()
 
         if state.failed:
             slog.error(f"Migration failed: {state.failure_reason}")

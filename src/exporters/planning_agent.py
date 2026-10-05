@@ -65,6 +65,7 @@ class PlanningAgent(ExportAgent[ExportState]):
         assert state.checklist is not None, (
             "Checklist must be created by planning agent"
         )
+        state.ensure_molecule_checklist()
         state.checklist.save(state.get_checklist_path())
         self._log.info(f"Checklist after planning:\n{state.checklist.to_markdown()}")
 

@@ -171,6 +171,19 @@ wheels = [
 ]
 
 [[package]]
+name = "ansible-creator"
+version = "26.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jinja2" },
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b3/a1/74bbbc43d3c0b195060a91a69dabeb30462125a057d2d2d27601ce62b5c9/ansible_creator-26.9.0.tar.gz", hash = "sha256:8f8d47009ebc33852e23137654c612532c78be0d97c1958432b6f6aa70d99d7c", size = 9907366, upload-time = "2026-09-22T09:39:57.175Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cd/9a/5156ec8b25a688a51b24654240d80251b9e8273065bea4ed7305e0b568bb/ansible_creator-26.9.0-py3-none-any.whl", hash = "sha256:3c3e8bdb19c0c3448c15441bfa1a4b1db1132622a3cb15769574f6014a6ecc4c", size = 138276, upload-time = "2026-09-22T09:39:55.45Z" },
+]
+
+[[package]]
 name = "ansible-lint"
 version = "26.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3695,6 +3708,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "ansible" },
+    { name = "ansible-creator" },
     { name = "ansible-lint" },
     { name = "apme-engine" },
     { name = "boto3" },
@@ -3730,6 +3744,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "ansible", specifier = ">=12.1.0" },
+    { name = "ansible-creator", specifier = ">=26.9.0" },
     { name = "ansible-lint", specifier = ">=25.9.2" },
     { name = "apme-engine", git = "https://github.com/ansible/apme.git?rev=v2026.9.3" },
     { name = "boto3", specifier = ">=1.43.10" },

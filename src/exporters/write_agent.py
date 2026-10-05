@@ -19,7 +19,7 @@ from src.exporters.export_agent import ExportAgent
 from src.exporters.state import ExportState
 from src.exporters.tools.apme import APME
 from src.model import get_runnable_config
-from src.types import ChecklistStatus
+from src.types import Checklist, ChecklistStatus
 from src.types.telemetry import AgentMetrics
 from src.utils.config import get_config_int
 from src.utils.logging import get_logger
@@ -112,6 +112,14 @@ class WriteAgent(ExportAgent[ExportState]):
         workflow.add_edge("mark_failed", "__end__")
 
         return workflow.compile()
+
+    @staticmethod
+    def _all_checklist_files_complete(checklist: Checklist) -> bool:
+        """Only treat present, explicitly completed non-Molecule items as finished."""
+        return all(
+            item.status == ChecklistStatus.COMPLETE and item.target_exists()
+            for item in checklist.items_by_category(exclude={"molecule"})
+        )
 
     def _write_standard_files_node(self, state: WriteAgentState) -> WriteAgentState:
         """Node: Create standard boilerplate files before LLM agent runs."""
@@ -411,10 +419,7 @@ class WriteAgent(ExportAgent[ExportState]):
         assert state.checklist is not None, (
             "Checklist must exist before write agent execution"
         )
-        if all(
-            item.target_exists()
-            for item in state.checklist.items_by_category(exclude={"molecule"})
-        ):
+        if self._all_checklist_files_complete(state.checklist):
             self._log.info("All files already created, skipping write agent")
             self._current_metrics = None
             return state
