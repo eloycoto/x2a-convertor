@@ -1,14 +1,16 @@
 """Create Ansible playbook projects and collection roles with ansible-creator."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from ansible_creator.api import V1, CreatorResult
 
+from src.exporters.services.ansible_project_layout import (
+    DEFAULT_NAMESPACE,
+    DEFAULT_PROJECT,
+    AnsibleProjectLayout,
+)
 from src.types import AnsibleModule
-
-DEFAULT_NAMESPACE = "x2a"
-DEFAULT_PROJECT = "project"
 
 
 class AnsibleCreator:
@@ -39,6 +41,26 @@ class AnsibleProject:
         self.creator = creator or AnsibleCreator()
         self.namespace = namespace
         self.project_name = project_name
+
+    @classmethod
+    def ensure(
+        cls,
+        path: str | Path,
+        creator: AnsibleCreator | None = None,
+        namespace: str = DEFAULT_NAMESPACE,
+        project_name: str = DEFAULT_PROJECT,
+    ) -> Self:
+        """Initialize an absent playbook project and return its project wrapper."""
+        project_path = Path(path)
+        project_creator = creator or AnsibleCreator()
+        if not project_path.exists() or not any(project_path.iterdir()):
+            project_creator.run(
+                "init",
+                "playbook",
+                collection=f"{namespace}.{project_name}",
+                init_path=str(project_path),
+            )
+        return cls(project_path, project_creator, namespace, project_name)
 
     @property
     def collection_path(self) -> Path:
@@ -80,34 +102,11 @@ class AnsibleProject:
             role_path / "meta" / "main.yml"
         ).is_file()
 
-
-class Ansiblescaffold:
-    """Initialize a playbook project and return its AnsibleProject wrapper."""
-
-    def __init__(
-        self,
-        path: str | Path,
-        creator: AnsibleCreator | None = None,
-        namespace: str = DEFAULT_NAMESPACE,
-        project_name: str = DEFAULT_PROJECT,
-    ) -> None:
-        self.path = Path(path)
-        self.creator = creator or AnsibleCreator()
-        self.namespace = namespace
-        self.project_name = project_name
-
-    def create(self) -> AnsibleProject:
-        """Create the playbook project if needed and return its wrapper."""
-        if not self.path.exists() or not any(self.path.iterdir()):
-            self.creator.run(
-                "init",
-                "playbook",
-                collection=f"{self.namespace}.{self.project_name}",
-                init_path=str(self.path),
-            )
-        return AnsibleProject(
-            self.path,
-            self.creator,
+    def layout(self, module: AnsibleModule) -> AnsibleProjectLayout:
+        """Build layout metadata using this project's configured identity."""
+        return AnsibleProjectLayout.from_module(
+            module,
+            project_path=self.path,
             namespace=self.namespace,
             project_name=self.project_name,
         )

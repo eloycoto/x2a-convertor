@@ -7,7 +7,6 @@ from src.exporters.services.ansible_scaffold import (
     DEFAULT_PROJECT,
     AnsibleCreator,
     AnsibleProject,
-    Ansiblescaffold,
 )
 
 
@@ -58,7 +57,7 @@ def test_create_role_is_idempotent_when_role_exists(tmp_path):
 def test_scaffold_initializes_playbook_project_with_default_fqcn(tmp_path):
     project_path = tmp_path / "playbook"
     creator = MagicMock()
-    project = Ansiblescaffold(project_path, creator).create()
+    project = AnsibleProject.ensure(project_path, creator)
 
     assert isinstance(project, AnsibleProject)
     assert project.path == project_path
@@ -79,7 +78,7 @@ def test_scaffold_does_not_reinitialize_nonempty_project(tmp_path):
     (project_path / "ansible.cfg").touch()
     creator = MagicMock()
 
-    Ansiblescaffold(project_path, creator).create()
+    AnsibleProject.ensure(project_path, creator)
 
     creator.run.assert_not_called()
 

@@ -9,15 +9,13 @@ from prompts.get_prompt import get_prompt
 from src.exporters.export_agent import ExportAgent
 from src.exporters.services.molecule_project import MoleculeProject
 from src.exporters.state import ExportState
+from src.exporters.types import MoleculeStatus
 from src.types import ChecklistStatus
 from src.types.telemetry import AgentMetrics
 from src.utils.logging import get_logger
 from tools.write_file import WriteFileTool
 
 logger = get_logger(__name__)
-
-MOLECULE_NOT_EXECUTED = "statically_validated_not_executed"
-MOLECULE_GENERATION_FAILED = "generation_failed_unverified"
 
 
 class MoleculeAgent(ExportAgent[ExportState]):
@@ -36,8 +34,7 @@ class MoleculeAgent(ExportAgent[ExportState]):
         if state.checklist is None:
             return self._generation_failed(state, "Migration checklist is unavailable")
 
-        state.ensure_molecule_checklist()
-        project = MoleculeProject(state)
+        project = MoleculeProject(state.layout)
         try:
             project.scaffold()
             errors, attempts = self._generate_and_validate(state, project, metrics)
@@ -54,7 +51,7 @@ class MoleculeAgent(ExportAgent[ExportState]):
             metrics.record_metric("molecule_generation_attempts", attempts)
             metrics.record_metric("molecule_static_validation", True)
         return state.update(
-            molecule_status=MOLECULE_NOT_EXECUTED,
+            molecule_status=MoleculeStatus.NOT_EXECUTED,
             molecule_report=(
                 "Scenario files passed static validation. Molecule was not run by the converter; "
                 "developer/CI execution is required for runtime acceptance."
@@ -86,8 +83,7 @@ class MoleculeAgent(ExportAgent[ExportState]):
         metrics: AgentMetrics | None,
     ) -> None:
         """Invoke the LLM only for source-grounded verify.yml generation."""
-        scenario_path = state.get_molecule_scenario_path()
-        verify_path = scenario_path / "verify.yml"
+        verify_path = state.layout.molecule_verify_path
         system_message = get_prompt(self.SYSTEM_PROMPT_NAME).format()
         task_message = get_prompt(self.USER_PROMPT_NAME).format(
             module=state.module,
@@ -122,7 +118,7 @@ class MoleculeAgent(ExportAgent[ExportState]):
     def _mark_verification_error(self, state: ExportState, errors: list[str]) -> None:
         """Persist static validation failure against the verify checklist item."""
         assert state.checklist is not None
-        verify_path = str(state.get_molecule_scenario_path() / "verify.yml")
+        verify_path = str(state.layout.molecule_verify_path)
         state.checklist.update_task(
             source_path="N/A",
             target_path=verify_path,
@@ -135,6 +131,6 @@ class MoleculeAgent(ExportAgent[ExportState]):
         """Keep migration nonfatal but make unverified tests visible to users."""
         self._log.warning("Molecule generation is unverified", reason=reason)
         return state.update(
-            molecule_status=MOLECULE_GENERATION_FAILED,
+            molecule_status=MoleculeStatus.GENERATION_FAILED,
             molecule_report=f"Static generation/validation failed: {reason}",
         )

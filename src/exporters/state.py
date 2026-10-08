@@ -5,8 +5,12 @@ through its various phases. Technology-agnostic.
 """
 
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from pathlib import Path
 
+from src.exporters.migration_report import MigrationReport
+from src.exporters.services.ansible_project_layout import AnsibleProjectLayout
+from src.exporters.types import MoleculeStatus
 from src.types import (
     AAPDiscoveryResult,
     AnsibleModule,
@@ -16,14 +20,8 @@ from src.types import (
     DocumentFile,
     MigrationStateInterface,
 )
-from src.types.checklist import ChecklistStats
 from src.types.technology import Technology
 
-# Constants
-ANSIBLE_PROJECT_PATH = Path("ansible")
-ANSIBLE_PATH_TEMPLATE = (
-    "ansible/collections/ansible_collections/x2a/project/roles/{module}"
-)
 CHECKLIST_FILENAME = ".checklist.json"
 
 
@@ -84,69 +82,39 @@ class ExportState(BaseState, MigrationStateInterface):
     credential_config: CredentialConfig | None = field(default=None, kw_only=True)
     source_technology: Technology = field(default=Technology.CHEF, kw_only=True)
     review_report: str = field(default="", kw_only=True)
-    molecule_status: str = field(default="not_generated", kw_only=True)
+    molecule_status: MoleculeStatus = field(
+        default=MoleculeStatus.NOT_GENERATED, kw_only=True
+    )
     molecule_report: str = field(default="", kw_only=True)
 
-    def get_ansible_path(self) -> str:
-        """Get the Ansible output path for this module.
+    @cached_property
+    def layout(self) -> AnsibleProjectLayout:
+        """Return this module's cached Ansible project layout."""
+        return AnsibleProjectLayout.from_module(self.module)
 
-        Returns:
-            Path string for the role in the adjacent Ansible collection
-        """
-        return ANSIBLE_PATH_TEMPLATE.format(module=str(self.module))
+    def get_ansible_path(self) -> str:
+        """Return the adjacent collection role path for this module."""
+        return str(self.layout.role_path)
 
     def get_ansible_project_path(self) -> Path:
-        """Get the root path for the Ansible project containing this role."""
-        return ANSIBLE_PROJECT_PATH
+        """Return the project root containing this module's role."""
+        return self.layout.project_path
 
     def get_ansible_fqcn(self) -> str:
-        """Get the role's fully qualified collection name."""
-        return f"x2a.project.{self.module}"
+        """Return the role's fully qualified collection name."""
+        return self.layout.fqcn
 
     def get_run_playbook_path(self) -> Path:
-        """Get this module's project-level deployment playbook path."""
-        return self.get_ansible_project_path() / f"run_{self.module}.yml"
+        """Return this module's project-level deployment playbook path."""
+        return self.layout.run_playbook_path
 
     def get_molecule_scenario_path(self) -> Path:
-        """Get this module's project-level Molecule scenario path."""
-        return self.get_ansible_project_path() / "molecule" / str(self.module)
+        """Return this module's project-level Molecule scenario path."""
+        return self.layout.molecule_scenario_path
 
     def get_molecule_checklist_targets(self) -> dict[str, str]:
         """Return deterministic project and scenario artifacts owned by Molecule."""
-        scenario = self.get_molecule_scenario_path()
-        targets = {
-            self.get_run_playbook_path(): "Deployment entry point for the migrated role",
-            self.get_ansible_project_path()
-            / "molecule"
-            / "requirements.yml": "Test-only Podman collection dependency",
-            self.get_ansible_project_path()
-            / "molecule"
-            / "README.md": "Developer instructions for running Molecule",
-        }
-        targets.update(
-            {
-                scenario / relative: description
-                for relative, description in {
-                    "molecule.yml": "Ansible-native Molecule scenario configuration",
-                    "prepare.yml": "Bootstrap Python on the disposable Linux target",
-                    "converge.yml": "Run the deployment playbook under test",
-                    "verify.yml": "Verify migrated behavior against the source plan",
-                }.items()
-            }
-        )
-        return {str(path): description for path, description in targets.items()}
-
-    def ensure_molecule_checklist(self) -> None:
-        """Add deterministic Molecule artifacts to the migration checklist."""
-        if self.checklist is None:
-            return
-        for target_path, description in self.get_molecule_checklist_targets().items():
-            self.checklist.add_task(
-                category="molecule",
-                source_path="N/A",
-                target_path=target_path,
-                description=description,
-            )
+        return self.layout.molecule_checklist_targets()
 
     def get_checklist_path(self) -> Path:
         """Get the path to the checklist JSON file.
@@ -154,7 +122,7 @@ class ExportState(BaseState, MigrationStateInterface):
         Returns:
             Path object pointing to the checklist file
         """
-        return Path(self.get_ansible_path()) / CHECKLIST_FILENAME
+        return self.layout.role_path / CHECKLIST_FILENAME
 
     def update(self, **kwargs) -> "ExportState":
         """Create a new ExportState instance with updated fields.
@@ -207,76 +175,4 @@ class ExportState(BaseState, MigrationStateInterface):
 
     def report_status(self) -> str:
         """Build the full human-readable migration report."""
-        assert self.checklist is not None, (
-            "Checklist must be initialized before reporting"
-        )
-        checklist = self.checklist
-        stats = checklist.get_stats()
-        lines = (
-            self._failure_report(stats, checklist)
-            if self.failed
-            else self._success_report(stats, checklist)
-        )
-
-        if self.telemetry:
-            lines.extend(
-                ["", "## Telemetry", "", "```", self.telemetry.to_summary(), "```"]
-            )
-
-        return "\n".join(lines)
-
-    def _failure_report(self, stats: ChecklistStats, checklist: Checklist) -> list[str]:
-        """Build summary lines for a failed migration."""
-        lines = [
-            f"# MIGRATION FAILED for {self.module}",
-            "",
-            f"**Failure Reason:** {self.failure_reason}",
-            "",
-            "## Migration Summary",
-            "",
-            stats.to_markdown(),
-            f"- **Write attempts:** {self.write_attempt_counter}",
-            f"- **Validation attempts:** {self.validation_attempt_counter}",
-            "",
-            "## Partial Validation Report",
-            "",
-            self.validation_report or "_Not run_",
-        ]
-        if self.review_report:
-            lines.extend(["", "### Review Report", "", self.review_report])
-        lines.extend(self._molecule_report_lines())
-        lines.extend(["", "### Partial Checklist", "", checklist.to_markdown()])
-        return lines
-
-    def _success_report(self, stats: ChecklistStats, checklist: Checklist) -> list[str]:
-        """Build summary lines for a successful migration."""
-        lines = [
-            f"# Migration Summary for {self.module}",
-            "",
-            stats.to_markdown(),
-            f"- **Write attempts:** {self.write_attempt_counter}",
-            f"- **Validation attempts:** {self.validation_attempt_counter}",
-            "",
-            "## Final Validation Report",
-            "",
-            self.validation_report,
-        ]
-        if self.review_report:
-            lines.extend(["", "### Review Report", "", str(self.review_report)])
-        lines.extend(self._molecule_report_lines())
-        lines.extend(["", "### Final Checklist", "", checklist.to_markdown()])
-        return lines
-
-    def _molecule_report_lines(self) -> list[str]:
-        """Report generated test status without implying runtime execution."""
-        if self.molecule_status == "not_generated":
-            return []
-        return [
-            "",
-            "### Molecule Test Generation",
-            "",
-            f"**Status:** {self.molecule_status}",
-            "",
-            self.molecule_report
-            or "Molecule tests were not executed by the converter.",
-        ]
+        return MigrationReport.from_state(self).render()

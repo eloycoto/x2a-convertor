@@ -5,7 +5,9 @@ pipeline. The export agents (Planning, Write, Validation) work from migration
 plans and checklists - they are not technology-specific.
 """
 
+from collections.abc import Callable
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
 from langgraph.graph import END, START, StateGraph
@@ -15,7 +17,7 @@ from src.exporters.credential_agent import CredentialAgent
 from src.exporters.molecule_agent import MoleculeAgent
 from src.exporters.planning_agent import PlanningAgent
 from src.exporters.review_agent import ReviewAgent
-from src.exporters.services.ansible_scaffold import Ansiblescaffold
+from src.exporters.services.ansible_scaffold import AnsibleProject
 from src.exporters.state import ExportState
 from src.exporters.types import MigrationCategory
 from src.exporters.validation_agent import ValidationAgent
@@ -60,11 +62,17 @@ class ToAnsibleSubagent:
     state object.
     """
 
-    def __init__(self, model=None, module: AnsibleModule | None = None) -> None:
+    def __init__(
+        self,
+        model=None,
+        module: AnsibleModule | None = None,
+        project_factory: Callable[[str | Path], AnsibleProject] | None = None,
+    ) -> None:
         self.model = model or get_model()
         if module is None:
             raise ValueError("module parameter is required")
         self.module = module
+        self._ansible_project_factory = project_factory or AnsibleProject.ensure
 
         self.discovery_agent = AAPDiscoveryAgent(model=self.model)
         self.credential_agent = CredentialAgent(model=self.model)
@@ -137,7 +145,7 @@ class ToAnsibleSubagent:
         project_path = state.get_ansible_project_path()
         logger.info(f"Scaffolding Ansible project at {project_path}")
         try:
-            project = Ansiblescaffold(path=project_path).create()
+            project = self._ansible_project_factory(project_path)
             role_path = project.create_role(str(state.module))
         except (RuntimeError, OSError) as error:
             message = f"Unable to scaffold Ansible project or role: {error}"
@@ -161,9 +169,21 @@ class ToAnsibleSubagent:
         slog.info("Initializing migration workflow")
 
         if state.checklist is None:
-            checklist = self._load_or_create_checklist(state)
-            state = state.update(checklist=checklist)
-
+            state = state.update(checklist=self._load_or_create_checklist(state))
+        assert state.checklist is not None
+        for (
+            target_path,
+            description,
+        ) in state.layout.molecule_checklist_targets().items():
+            state.checklist.add_task(
+                category=MigrationCategory.MOLECULE,
+                source_path="N/A",
+                target_path=target_path,
+                description=description,
+            )
+        checklist_path = state.get_checklist_path()
+        checklist_path.parent.mkdir(parents=True, exist_ok=True)
+        state.checklist.save(checklist_path)
         return state.update(current_phase=MigrationPhase.PLANNING)
 
     def _check_failure_after_agent(
