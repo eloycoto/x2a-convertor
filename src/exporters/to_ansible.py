@@ -153,7 +153,6 @@ class ToAnsibleSubagent:
             return state.mark_failed(message).update(
                 current_phase=MigrationPhase.FAILED
             )
-
         logger.info(f"Ansible role ready at {role_path}")
         return state.update(current_phase=MigrationPhase.SCAFFOLDING)
 

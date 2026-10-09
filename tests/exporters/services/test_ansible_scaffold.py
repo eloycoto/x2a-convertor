@@ -33,6 +33,7 @@ def test_create_role_scaffolds_in_adjacent_collection(tmp_path):
     role_path = project.create_role("My-Role")
 
     assert role_path == collection_path / "roles" / "my_role"
+    assert not (role_path / "tasks" / "main.yml").exists()
     assert project.check_role("my_role")
     creator.run.assert_called_once_with(
         "add",
@@ -51,6 +52,7 @@ def test_create_role_is_idempotent_when_role_exists(tmp_path):
     create_role_files(role_path)
 
     assert project.create_role("role_name") == role_path
+    assert not (role_path / "tasks" / "main.yml").exists()
     creator.run.assert_not_called()
 
 

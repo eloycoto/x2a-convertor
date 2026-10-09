@@ -93,12 +93,17 @@ class AnsibleProject:
         )
         if not self.check_role(role_name):
             raise RuntimeError(f"ansible-creator did not create role at {role_path}")
+        self._remove_scaffold_task_file(role_path)
         return role_path
+
+    def _remove_scaffold_task_file(self, role_path: Path) -> None:
+        """Remove the default task file so migration planning owns task content."""
+        (role_path / "tasks" / "main.yml").unlink(missing_ok=True)
 
     def check_role(self, name: str) -> bool:
         """Return whether the named role has its expected scaffold files."""
         role_path = self.layout(AnsibleModule(name)).role_path
-        return (role_path / "tasks" / "main.yml").is_file() and (
+        return (role_path / "tasks").is_dir() and (
             role_path / "meta" / "main.yml"
         ).is_file()
 
