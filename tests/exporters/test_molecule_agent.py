@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from src.exporters.molecule_agent import MoleculeAgent
+from src.exporters.services.molecule_project import MoleculeProject
 from src.exporters.state import ExportState
 from src.exporters.to_ansible import MigrationPhase, ToAnsibleSubagent
 from src.exporters.types import MigrationCategory, MoleculeStatus
@@ -50,7 +51,7 @@ def write_valid_verification(agent):
 
     def invoke_react(state, messages, metrics):
         captured_messages.append(messages)
-        verify = state.get_molecule_scenario_path() / "verify.yml"
+        verify = state.molecule_verify_path
         verify.write_text(
             "---\n- hosts: all\n  tasks:\n"
             "    - name: Assert service state\n"
@@ -86,7 +87,9 @@ def test_generation_marks_files_static_only_not_executed(tmp_path, monkeypatch):
         in system_prompt
     )
     assert "Write only ``." not in system_prompt
-    assert str(state.get_molecule_scenario_path() / "verify.yml") in task_prompt
+    assert "no Molecule driver plugin is used" in system_prompt
+    assert "scenario's Ansible inventory" in system_prompt
+    assert str(state.molecule_verify_path) in task_prompt
     assert "Final role task files" not in task_prompt
     assert result.checklist is not None
     assert all(
@@ -106,7 +109,7 @@ def test_generation_failure_is_reported_and_verify_remains_incomplete(
 
     result = agent.execute(state, None)
 
-    verify_path = str(state.get_molecule_scenario_path() / "verify.yml")
+    verify_path = str(state.molecule_verify_path)
     assert result.checklist is not None
     verify_item = result.checklist.find_task("N/A", verify_path)
     assert verify_item is not None
@@ -124,7 +127,7 @@ def test_empty_supported_expectation_set_can_be_statically_validated(
     state = initialize_state(create_state(tmp_path))
 
     def write_empty_verification(state, messages, metrics):
-        state.layout.molecule_verify_path.write_text(
+        state.molecule_verify_path.write_text(
             "---\n- name: No supported pre-flight checks\n  hosts: all\n  tasks: []\n"
         )
         return {"messages": []}
@@ -151,8 +154,34 @@ def test_initialize_is_the_single_owner_of_molecule_checklist_seeding(
 
     assert initialized.checklist is not None
     molecule_items = initialized.checklist.items_by_category(include={"molecule"})
-    assert len(molecule_items) == 7
+    assert len(molecule_items) == 10
     assert all(item.source_path == "N/A" for item in molecule_items)
+
+
+class TestExistingScaffold:
+    def test_legacy_driver_is_reported_without_llm_retries_or_overwrites(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        state = initialize_state(create_state(tmp_path))
+        MoleculeProject(state.layout).scaffold()
+        config = state.layout.molecule_scenario_path / "molecule.yml"
+        legacy = "driver:\n  name: podman\n"
+        config.write_text(legacy)
+        agent = create_agent()
+        agent.invoke_react = MagicMock()
+
+        result = agent.execute(state, None)
+
+        assert result.molecule_status == MoleculeStatus.GENERATION_FAILED
+        assert "driver plugin" in result.molecule_report
+        assert config.read_text() == legacy
+        agent.invoke_react.assert_not_called()
+        assert result.checklist is not None
+        assert all(
+            item.status.value != "complete"
+            for item in result.checklist.items_by_category(include={"molecule"})
+        )
 
 
 def test_scaffold_uses_the_named_project_factory_dependency():

@@ -19,7 +19,7 @@ from src.exporters.export_agent import ExportAgent
 from src.exporters.state import ExportState
 from src.exporters.tools.apme import APME
 from src.model import get_runnable_config
-from src.types import Checklist, ChecklistStatus
+from src.types import ChecklistStatus
 from src.types.telemetry import AgentMetrics
 from src.utils.config import get_config_int
 from src.utils.logging import get_logger
@@ -113,21 +113,13 @@ class WriteAgent(ExportAgent[ExportState]):
 
         return workflow.compile()
 
-    @staticmethod
-    def _all_checklist_files_complete(checklist: Checklist) -> bool:
-        """Only treat present, explicitly completed non-Molecule items as finished."""
-        return all(
-            item.status == ChecklistStatus.COMPLETE and item.target_exists()
-            for item in checklist.items_by_category(exclude={"molecule"})
-        )
-
     def _write_standard_files_node(self, state: WriteAgentState) -> WriteAgentState:
         """Node: Create standard boilerplate files before LLM agent runs."""
         export_state = state.export_state
         slog = logger.bind(phase="write_standard_files")
         slog.info("Creating standard boilerplate files")
 
-        ansible_path = export_state.get_ansible_path()
+        ansible_path = str(export_state.role_path)
         meta_file_path = Path(ansible_path) / "meta" / "main.yml"
 
         role_name = str(export_state.module)
@@ -160,7 +152,7 @@ class WriteAgent(ExportAgent[ExportState]):
             )
             slog.info(f"Added task to checklist: {target_path_str}")
 
-        export_state.checklist.save(export_state.get_checklist_path())
+        export_state.checklist.save(export_state.checklist_path)
         state.export_state = export_state
         return state
 
@@ -245,7 +237,7 @@ class WriteAgent(ExportAgent[ExportState]):
 
         slog.debug(f"Checklist before writing:\n{export_state.checklist.to_markdown()}")
 
-        ansible_path = export_state.get_ansible_path()
+        ansible_path = str(export_state.role_path)
         system_message = get_prompt(self.SYSTEM_PROMPT_NAME).format(
             source_technology=export_state.source_technology.value,
         )
@@ -270,7 +262,7 @@ class WriteAgent(ExportAgent[ExportState]):
             ],
             self._current_metrics,
         )
-        export_state.checklist.save(export_state.get_checklist_path())
+        export_state.checklist.save(export_state.checklist_path)
 
         slog.info(f"Checklist after writing:\n{export_state.checklist.to_markdown()}")
         message = self.get_last_ai_message(result)
@@ -302,16 +294,15 @@ class WriteAgent(ExportAgent[ExportState]):
                     item.source_path, item.target_path, ChecklistStatus.MISSING
                 )
 
-        export_state.checklist.save(export_state.get_checklist_path())
+        export_state.checklist.save(export_state.checklist_path)
 
-        if missing_files:
-            slog.warning(f"Missing {len(missing_files)} files: {missing_files[:5]}...")
-            state.missing_files = missing_files
-            state.complete = False
-        else:
-            slog.info("All files created successfully!")
-            state.missing_files = []
-            state.complete = True
+        incomplete_targets = export_state.checklist.incomplete_targets(
+            exclude={"molecule"}
+        )
+        state.missing_files = missing_files
+        state.complete = not incomplete_targets
+        if incomplete_targets:
+            slog.warning("Unfinished migration files", targets=incomplete_targets)
 
         export_state = export_state.update(
             write_attempt_counter=export_state.write_attempt_counter + 1
@@ -330,7 +321,7 @@ class WriteAgent(ExportAgent[ExportState]):
             return state
 
         slog.info("Running ansible-lint with autofix on generated files")
-        ansible_path = export_state.get_ansible_path()
+        ansible_path = str(export_state.role_path)
         lint_tool = AnsibleLintTool()
 
         try:
@@ -351,7 +342,7 @@ class WriteAgent(ExportAgent[ExportState]):
             return state
 
         slog.info("Running APME format on generated files")
-        ansible_path = export_state.get_ansible_path()
+        ansible_path = str(export_state.role_path)
         try:
             report = self._apme.format(ansible_path, apply=True)
             slog.info(
@@ -371,16 +362,16 @@ class WriteAgent(ExportAgent[ExportState]):
             f"Max write attempts ({state.max_attempts}) reached, marking migration as failed"
         )
 
-        assert state.missing_files is not None, (
-            "missing_files must be set after file check"
-        )
-        missing_file_list = ", ".join(state.missing_files[:5])
-        if len(state.missing_files) > 5:
-            missing_file_list += f" ... and {len(state.missing_files) - 5} more"
+        checklist = state.export_state.checklist
+        assert checklist is not None
+        incomplete_targets = checklist.incomplete_targets(exclude={"molecule"})
+        target_summary = ", ".join(incomplete_targets[:5])
+        if len(incomplete_targets) > 5:
+            target_summary += f" ... and {len(incomplete_targets) - 5} more"
 
         export_state = state.export_state.mark_failed(
-            f"Failed to create {len(state.missing_files)} files after {state.max_attempts} attempts. "
-            f"Missing files: {missing_file_list}"
+            f"Failed to complete {len(incomplete_targets)} files after {state.max_attempts} attempts. "
+            f"Incomplete files: {target_summary}"
         )
         state.export_state = export_state
 
@@ -419,7 +410,7 @@ class WriteAgent(ExportAgent[ExportState]):
         assert state.checklist is not None, (
             "Checklist must exist before write agent execution"
         )
-        if self._all_checklist_files_complete(state.checklist):
+        if not state.checklist.incomplete_targets(exclude={"molecule"}):
             self._log.info("All files already created, skipping write agent")
             self._current_metrics = None
             return state

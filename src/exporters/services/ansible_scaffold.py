@@ -51,16 +51,15 @@ class AnsibleProject:
         project_name: str = DEFAULT_PROJECT,
     ) -> Self:
         """Initialize an absent playbook project and return its project wrapper."""
-        project_path = Path(path)
-        project_creator = creator or AnsibleCreator()
-        if not project_path.exists() or not any(project_path.iterdir()):
-            project_creator.run(
+        project = cls(path, creator, namespace, project_name)
+        if not project.path.exists() or not any(project.path.iterdir()):
+            project.creator.run(
                 "init",
                 "playbook",
-                collection=f"{namespace}.{project_name}",
-                init_path=str(project_path),
+                collection=f"{project.namespace}.{project.project_name}",
+                init_path=str(project.path),
             )
-        return cls(project_path, project_creator, namespace, project_name)
+        return project
 
     @property
     def collection_path(self) -> Path:
@@ -75,8 +74,9 @@ class AnsibleProject:
 
     def create_role(self, name: str) -> Path:
         """Scaffold a role in the adjacent collection and return its path."""
-        role_name = str(AnsibleModule(name))
-        role_path = self.collection_path / "roles" / role_name
+        layout = self.layout(AnsibleModule(name))
+        role_name = str(layout.module)
+        role_path = layout.role_path
         if self.check_role(role_name):
             return role_path
         if role_path.exists():
@@ -89,7 +89,7 @@ class AnsibleProject:
             "resource",
             "role",
             role_name=role_name,
-            path=str(self.collection_path),
+            path=str(layout.collection_path),
         )
         if not self.check_role(role_name):
             raise RuntimeError(f"ansible-creator did not create role at {role_path}")
@@ -97,7 +97,7 @@ class AnsibleProject:
 
     def check_role(self, name: str) -> bool:
         """Return whether the named role has its expected scaffold files."""
-        role_path = self.collection_path / "roles" / str(AnsibleModule(name))
+        role_path = self.layout(AnsibleModule(name)).role_path
         return (role_path / "tasks" / "main.yml").is_file() and (
             role_path / "meta" / "main.yml"
         ).is_file()

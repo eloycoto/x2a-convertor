@@ -46,7 +46,7 @@ class MoleculeAgent(ExportAgent[ExportState]):
             return self._generation_failed(state, "; ".join(errors))
 
         self._mark_checklist_complete(state)
-        state.checklist.save(state.get_checklist_path())
+        state.checklist.save(state.checklist_path)
         if metrics:
             metrics.record_metric("molecule_generation_attempts", attempts)
             metrics.record_metric("molecule_static_validation", True)
@@ -65,6 +65,9 @@ class MoleculeAgent(ExportAgent[ExportState]):
         metrics: AgentMetrics | None,
     ) -> tuple[list[str], int]:
         """Retry verify generation only while static validation reports errors."""
+        errors = project.validate_scaffold()
+        if errors:
+            return errors, 0
         errors = project.validate()
         if not errors:
             return [], 0
@@ -83,7 +86,7 @@ class MoleculeAgent(ExportAgent[ExportState]):
         metrics: AgentMetrics | None,
     ) -> None:
         """Invoke the LLM only for source-grounded verify.yml generation."""
-        verify_path = state.layout.molecule_verify_path
+        verify_path = state.molecule_verify_path
         system_message = get_prompt(self.SYSTEM_PROMPT_NAME).format()
         task_message = get_prompt(self.USER_PROMPT_NAME).format(
             module=state.module,
@@ -104,7 +107,7 @@ class MoleculeAgent(ExportAgent[ExportState]):
     def _mark_checklist_complete(self, state: ExportState) -> None:
         """Mark generated artifacts complete after the entire scenario validates."""
         assert state.checklist is not None
-        for target_path in state.get_molecule_checklist_targets():
+        for target_path in state.molecule_checklist_targets():
             if not state.checklist.update_task(
                 source_path="N/A",
                 target_path=target_path,
@@ -118,14 +121,14 @@ class MoleculeAgent(ExportAgent[ExportState]):
     def _mark_verification_error(self, state: ExportState, errors: list[str]) -> None:
         """Persist static validation failure against the verify checklist item."""
         assert state.checklist is not None
-        verify_path = str(state.layout.molecule_verify_path)
+        verify_path = str(state.molecule_verify_path)
         state.checklist.update_task(
             source_path="N/A",
             target_path=verify_path,
             status=ChecklistStatus.ERROR,
             notes="; ".join(errors),
         )
-        state.checklist.save(state.get_checklist_path())
+        state.checklist.save(state.checklist_path)
 
     def _generation_failed(self, state: ExportState, reason: str) -> ExportState:
         """Keep migration nonfatal but make unverified tests visible to users."""

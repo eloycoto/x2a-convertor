@@ -1,7 +1,5 @@
 """Compose the Molecule scenario templates, writer, and static validator."""
 
-from pathlib import Path
-
 from src.exporters.services.ansible_project_layout import AnsibleProjectLayout
 from src.exporters.services.molecule_scenario_templates import MoleculeScenarioTemplates
 from src.exporters.services.molecule_scenario_validator import MoleculeScenarioValidator
@@ -22,14 +20,18 @@ class MoleculeProject:
         self.templates = templates or MoleculeScenarioTemplates(layout)
         self.writer = writer or MoleculeScenarioWriter()
         self.validator = validator or MoleculeScenarioValidator(layout)
-        self._files: dict[Path, str] = {}
 
     def scaffold(self) -> None:
         """Render and write deterministic files without replacing user edits."""
-        self._files = self.templates.files()
-        self.writer.write_missing(self._files)
+        self.writer.write_missing(self.templates.files())
+
+    def validate_scaffold(self) -> list[str]:
+        """Report infrastructure errors that verification generation cannot repair."""
+        return self.validator.validate(
+            self.templates.files(), include_verification=False
+        )
 
     def validate(self) -> list[str]:
         """Validate generated YAML and the LLM-owned verification playbook."""
-        paths = [*self._files, self.layout.molecule_verify_path]
+        paths = [*self.templates.files(), self.layout.molecule_verify_path]
         return self.validator.validate(paths)

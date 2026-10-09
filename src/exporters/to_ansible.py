@@ -87,7 +87,7 @@ class ToAnsibleSubagent:
 
     def _load_or_create_checklist(self, state: ExportState) -> Checklist:
         """Load existing checklist or create a new one."""
-        checklist_path = state.get_checklist_path()
+        checklist_path = state.checklist_path
         if checklist_path.exists():
             logger.info(f"Loaded checklist from previous run: {checklist_path}")
             return Checklist.load(checklist_path, MigrationCategory)
@@ -142,7 +142,7 @@ class ToAnsibleSubagent:
 
     def _scaffold_project(self, state: ExportState) -> ExportState:
         """Create the Ansible project and its migration role before planning."""
-        project_path = state.get_ansible_project_path()
+        project_path = state.project_path
         logger.info(f"Scaffolding Ansible project at {project_path}")
         try:
             project = self._ansible_project_factory(project_path)
@@ -171,17 +171,14 @@ class ToAnsibleSubagent:
         if state.checklist is None:
             state = state.update(checklist=self._load_or_create_checklist(state))
         assert state.checklist is not None
-        for (
-            target_path,
-            description,
-        ) in state.layout.molecule_checklist_targets().items():
+        for target_path, description in state.molecule_checklist_targets().items():
             state.checklist.add_task(
                 category=MigrationCategory.MOLECULE,
                 source_path="N/A",
                 target_path=target_path,
                 description=description,
             )
-        checklist_path = state.get_checklist_path()
+        checklist_path = state.checklist_path
         checklist_path.parent.mkdir(parents=True, exist_ok=True)
         state.checklist.save(checklist_path)
         return state.update(current_phase=MigrationPhase.PLANNING)
@@ -205,14 +202,11 @@ class ToAnsibleSubagent:
 
         if state.current_phase == MigrationPhase.PLANNING:
             return "write_migration"
-        if state.current_phase in (MigrationPhase.WRITING, "writing"):
+        if state.current_phase == MigrationPhase.WRITING:
             return "review_role"
-        if state.current_phase in (MigrationPhase.REVIEWING, "reviewing"):
+        if state.current_phase == MigrationPhase.REVIEWING:
             return "molecule_testing"
-        if state.current_phase in (
-            MigrationPhase.MOLECULE_TESTING,
-            "molecule_testing",
-        ):
+        if state.current_phase == MigrationPhase.MOLECULE_TESTING:
             return "validate_migration"
         return "finalize"
 

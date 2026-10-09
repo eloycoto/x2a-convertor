@@ -13,7 +13,7 @@ from src.publishers.aap_client import (
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class AAPSyncResult:
     """Result of requesting a repository sync on AAP."""
 

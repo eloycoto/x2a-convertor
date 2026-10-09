@@ -52,52 +52,38 @@ class MigrationReport:
 
     def render(self) -> str:
         """Render the complete report as Markdown."""
-        lines = self._failure_lines() if self.failed else self._success_lines()
+        lines = self._heading_lines()
+        report_kind = "Partial" if self.failed else "Final"
+        lines.extend(
+            [
+                self.stats.to_markdown(),
+                f"- **Write attempts:** {self.write_attempts}",
+                f"- **Validation attempts:** {self.validation_attempts}",
+                "",
+                f"## {report_kind} Validation Report",
+                "",
+                self.validation_report or ("_Not run_" if self.failed else ""),
+            ]
+        )
+        if self.review_report:
+            lines.extend(["", "### Review Report", "", self.review_report])
+        lines.extend(self._molecule_lines())
+        lines.extend(["", f"### {report_kind} Checklist", "", self.checklist_markdown])
         if self.telemetry_summary:
             lines.extend(["", "## Telemetry", "", "```", self.telemetry_summary, "```"])
         return "\n".join(lines)
 
-    def _failure_lines(self) -> list[str]:
-        """Render a partial report for a failed migration."""
-        lines = [
+    def _heading_lines(self) -> list[str]:
+        if not self.failed:
+            return [f"# Migration Summary for {self.module}", ""]
+        return [
             f"# MIGRATION FAILED for {self.module}",
             "",
             f"**Failure Reason:** {self.failure_reason}",
             "",
             "## Migration Summary",
             "",
-            self.stats.to_markdown(),
-            f"- **Write attempts:** {self.write_attempts}",
-            f"- **Validation attempts:** {self.validation_attempts}",
-            "",
-            "## Partial Validation Report",
-            "",
-            self.validation_report or "_Not run_",
         ]
-        if self.review_report:
-            lines.extend(["", "### Review Report", "", self.review_report])
-        lines.extend(self._molecule_lines())
-        lines.extend(["", "### Partial Checklist", "", self.checklist_markdown])
-        return lines
-
-    def _success_lines(self) -> list[str]:
-        """Render a final report for a completed migration."""
-        lines = [
-            f"# Migration Summary for {self.module}",
-            "",
-            self.stats.to_markdown(),
-            f"- **Write attempts:** {self.write_attempts}",
-            f"- **Validation attempts:** {self.validation_attempts}",
-            "",
-            "## Final Validation Report",
-            "",
-            self.validation_report,
-        ]
-        if self.review_report:
-            lines.extend(["", "### Review Report", "", self.review_report])
-        lines.extend(self._molecule_lines())
-        lines.extend(["", "### Final Checklist", "", self.checklist_markdown])
-        return lines
 
     def _molecule_lines(self) -> list[str]:
         """Report generated test status without implying runtime execution."""

@@ -1,5 +1,6 @@
 """Tests for repository-only AAP publishing."""
 
+from dataclasses import FrozenInstanceError
 from unittest.mock import call
 
 import pytest
@@ -116,7 +117,9 @@ class TestAAPConfig:
         with pytest.raises(ValueError, match="AAP_ORG_NAME is required"):
             AAPConfig.from_env()
 
-    def test_auth_missing(self):
+    def test_auth_missing(self, monkeypatch):
+        for variable in ("AAP_OAUTH_TOKEN", "AAP_USERNAME", "AAP_PASSWORD"):
+            monkeypatch.delenv(variable, raising=False)
         cfg = AAPConfig(
             controller_url="https://aap.example", organization_name="Default"
         )
@@ -192,6 +195,12 @@ class TestAAPClient:
 
 
 class TestAAPSyncResult:
+    def test_result_is_immutable(self):
+        result = AAPSyncResult.disabled()
+
+        with pytest.raises(FrozenInstanceError):
+            result.__setattr__("enabled", True)
+
     def test_from_update(self):
         result = AAPSyncResult.from_update(
             "project", 42, {"id": "100", "status": "pending"}
